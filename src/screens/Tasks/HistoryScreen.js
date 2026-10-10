@@ -52,8 +52,7 @@ const goToLogin = navigation => {
 
 // "Saved place • within 200 m" — for Location Based rows
 const formatPlaceLine = item => {
-  const radius =
-    Number(item?.geofenceRadiusMeters) || 200;
+  const radius = Number(item?.geofenceRadiusMeters) || 200;
 
   const radiusText =
     radius >= 1000
@@ -80,8 +79,7 @@ const filterForTabList = (list, type, hasLocationInfo) => {
   return list.filter(item => {
     const looksLocation =
       item?.isLocationBased === true ||
-      (item?.isLocationBased === undefined &&
-        item?.latitude != null);
+      (item?.isLocationBased === undefined && item?.latitude != null);
 
     const looksTime = item?.isTimeBased === true;
 
@@ -109,32 +107,23 @@ const HistoryScreen = ({ navigation, route }) => {
   //   3. default 'time'
   const initialType =
     route?.params?.initialType ||
-    (route?.name === 'NonTimeBasedHistoryScreen'
-      ? 'non'
-      : 'time');
+    (route?.name === 'NonTimeBasedHistoryScreen' ? 'non' : 'time');
 
   const [type, setType] = useState(initialType);
 
-  const [pendingTasks, setPendingTasks] = useState([]);
   const [completedTasks, setCompletedTasks] = useState([]);
-  const [upcomingTasks, setUpcomingTasks] = useState([]);
 
   const [loading, setLoading] = useState(false);
 
-  const statusBarBg =
-    theme.headerBox || (isDark ? '#1F2937' : '#FFFFFF');
+  const statusBarBg = theme.headerBox || (isDark ? '#1F2937' : '#FFFFFF');
 
-  const primaryTextColor =
-    theme.text || (isDark ? '#F9FAFB' : '#111827');
+  const primaryTextColor = theme.text || (isDark ? '#F9FAFB' : '#111827');
 
-  const secondaryTextColor =
-    theme.subText || (isDark ? '#9CA3AF' : '#6B7280');
+  const secondaryTextColor = theme.subText || (isDark ? '#9CA3AF' : '#6B7280');
 
-  const cardBg =
-    theme.card || (isDark ? '#1F2937' : '#FFFFFF');
+  const cardBg = theme.card || (isDark ? '#1F2937' : '#FFFFFF');
 
-  const activeToggleBg =
-    isDark ? '#374151' : '#FFFFFF';
+  const activeToggleBg = isDark ? '#374151' : '#FFFFFF';
 
   // ============================================================
   // GET JWT TOKEN
@@ -144,16 +133,12 @@ const HistoryScreen = ({ navigation, route }) => {
       const token = await AsyncStorage.getItem('token');
 
       if (!token) {
-        Alert.alert(
-          'Session Expired',
-          'Please login again.',
-          [
-            {
-              text: 'OK',
-              onPress: () => goToLogin(navigation),
-            },
-          ],
-        );
+        Alert.alert('Session Expired', 'Please login again.', [
+          {
+            text: 'OK',
+            onPress: () => goToLogin(navigation),
+          },
+        ]);
 
         return null;
       }
@@ -162,10 +147,7 @@ const HistoryScreen = ({ navigation, route }) => {
     } catch (error) {
       console.log('Get Token Error:', error);
 
-      Alert.alert(
-        'Error',
-        'Unable to read your login session.',
-      );
+      Alert.alert('Error', 'Unable to read your login session.');
 
       return null;
     }
@@ -193,12 +175,11 @@ const HistoryScreen = ({ navigation, route }) => {
         type === 'location'
           ? '&locationBased=true'
           : type === 'non'
-            ? '&locationBased=false'
-            : '';
+          ? '&locationBased=false'
+          : '';
 
       const query =
-        `/Task/history?isTimeBased=${isTimeBased}` +
-        locationBasedFilter;
+        `/Task/history?isTimeBased=${isTimeBased}` + locationBasedFilter;
 
       const url = `${BASE_URL}${query}`;
 
@@ -217,110 +198,65 @@ const HistoryScreen = ({ navigation, route }) => {
       let data = {};
 
       try {
-        data = responseText
-          ? JSON.parse(responseText)
-          : {};
+        data = responseText ? JSON.parse(responseText) : {};
       } catch (parseError) {
-        console.log(
-          'History JSON Parse Error:',
-          parseError,
-        );
+        console.log('History JSON Parse Error:', parseError);
 
-        throw new Error(
-          `Invalid server response. Status: ${response.status}`,
-        );
+        throw new Error(`Invalid server response. Status: ${response.status}`);
       }
 
       if (response.status === 401) {
-        Alert.alert(
-          'Session Expired',
-          'Please login again.',
-          [
-            {
-              text: 'OK',
-              onPress: () => goToLogin(navigation),
-            },
-          ],
-        );
+        Alert.alert('Session Expired', 'Please login again.', [
+          {
+            text: 'OK',
+            onPress: () => goToLogin(navigation),
+          },
+        ]);
 
         return;
       }
 
       if (!response.ok) {
         throw new Error(
-          data?.message ||
-            `Request failed with status ${response.status}`,
+          data?.message || `Request failed with status ${response.status}`,
         );
       }
 
       if (!data?.success) {
-        setPendingTasks([]);
         setCompletedTasks([]);
-        setUpcomingTasks([]);
 
         console.log(
           'Fetch History Failed:',
-          data?.message ||
-            'Failed to fetch task history.',
+          data?.message || 'Failed to fetch completed task history.',
         );
 
         return;
       }
 
       const historyData = data?.data || {};
+      const done = Array.isArray(historyData.done) ? historyData.done : [];
 
-      const pending = Array.isArray(historyData.pending)
-        ? historyData.pending
-        : [];
+      // The API returns only completed tasks. Keep a client-side status check
+      // as a safety net so pending or snoozed records can never appear here.
+      const completedOnly = done.filter(item => {
+        const status = String(item?.status ?? '').toLowerCase();
+        return status === 'done' || (!status && item?.isCompleted === true);
+      });
 
-      const done = Array.isArray(historyData.done)
-        ? historyData.done
-        : [];
-
-      const upcoming = Array.isArray(historyData.upcoming)
-        ? historyData.upcoming
-        : [];
-
-      // =====================================================
-      // SAFETY NET: each tab shows strictly its own task type
-      // =====================================================
-      const allItems = [
-        ...pending,
-        ...done,
-        ...upcoming,
-      ];
-
-      const hasLocationInfo = allItems.some(
+      const hasLocationInfo = completedOnly.some(
         item =>
-          item?.isLocationBased !== undefined ||
-          item?.latitude !== undefined,
+          item?.isLocationBased !== undefined || item?.latitude !== undefined,
       );
 
-      setPendingTasks(
-        filterForTabList(pending, type, hasLocationInfo),
-      );
-      setCompletedTasks(
-        filterForTabList(done, type, hasLocationInfo),
-      );
-      setUpcomingTasks(
-        filterForTabList(upcoming, type, hasLocationInfo),
-      );
+      setCompletedTasks(filterForTabList(completedOnly, type, hasLocationInfo));
 
-      console.log('Pending Tasks:', pending.length);
-      console.log('Completed Tasks:', done.length);
-      console.log('Upcoming Tasks:', upcoming.length);
+      console.log('Completed Tasks:', completedOnly.length);
     } catch (error) {
       console.log('Fetch History Error:', error);
 
-      setPendingTasks([]);
       setCompletedTasks([]);
-      setUpcomingTasks([]);
 
-      Alert.alert(
-        'Error',
-        error?.message ||
-          'Failed to fetch task history.',
-      );
+      Alert.alert('Error', error?.message || 'Failed to fetch task history.');
     } finally {
       setLoading(false);
     }
@@ -370,13 +306,9 @@ const HistoryScreen = ({ navigation, route }) => {
     completedStatus = false,
     accentColor = '#2563EB',
   ) => {
-    const hasPlace =
-      item?.latitude != null ||
-      item?.isLocationBased;
+    const hasPlace = item?.latitude != null || item?.isLocationBased;
 
-    const hasWhen =
-      item?.dueDate != null ||
-      item?.dueTime != null;
+    const hasWhen = item?.dueDate != null || item?.dueTime != null;
 
     // Location rows show the saved place instead of a date.
     const showPlace = hasPlace && !hasWhen;
@@ -388,8 +320,7 @@ const HistoryScreen = ({ navigation, route }) => {
           styles.card,
           {
             backgroundColor: cardBg,
-            borderColor:
-              theme.border || 'rgba(0,0,0,0.06)',
+            borderColor: theme.border || 'rgba(0,0,0,0.06)',
           },
           completedStatus && styles.completedCard,
         ]}
@@ -463,11 +394,7 @@ const HistoryScreen = ({ navigation, route }) => {
 
             <View style={styles.dateRow}>
               <Icon
-                name={
-                  showPlace
-                    ? 'location-outline'
-                    : 'calendar-outline'
-                }
+                name={showPlace ? 'location-outline' : 'calendar-outline'}
                 size={12}
                 color={secondaryTextColor}
                 style={styles.dateIcon}
@@ -483,18 +410,13 @@ const HistoryScreen = ({ navigation, route }) => {
               >
                 {showPlace
                   ? formatPlaceLine(item)
-                  : formatDate(
-                      item.dueDate,
-                      item.dueTime,
-                    )}
+                  : formatDate(item.dueDate, item.dueTime)}
               </Text>
             </View>
 
             {!completedStatus && item.status === 'Snoozed' ? (
               <View style={styles.snoozedBadgeContainer}>
-                <Text style={styles.snoozedBadge}>
-                  Snoozed
-                </Text>
+                <Text style={styles.snoozedBadge}>Snoozed</Text>
               </View>
             ) : null}
           </View>
@@ -502,17 +424,11 @@ const HistoryScreen = ({ navigation, route }) => {
           <View style={styles.rightColumn}>
             {completedStatus ? (
               <View style={styles.completedBadgeContainer}>
-                <Text style={styles.completedBadge}>
-                  ✓ Done
-                </Text>
+                <Text style={styles.completedBadge}>✓ Done</Text>
               </View>
             ) : null}
 
-            <Icon
-              name="chevron-forward"
-              size={18}
-              color={secondaryTextColor}
-            />
+            <Icon name="chevron-forward" size={18} color={secondaryTextColor} />
           </View>
         </View>
       </TouchableOpacity>
@@ -522,11 +438,7 @@ const HistoryScreen = ({ navigation, route }) => {
   // ============================================================
   // SECTION HEADER
   // ============================================================
-  const renderSectionHeader = (
-    title,
-    count,
-    accentColor,
-  ) => {
+  const renderSectionHeader = (title, count, accentColor) => {
     return (
       <View style={styles.sectionHeaderRow}>
         <View style={styles.sectionTitleRow}>
@@ -574,10 +486,7 @@ const HistoryScreen = ({ navigation, route }) => {
     );
   };
 
-  const totalTasks =
-    pendingTasks.length +
-    completedTasks.length +
-    upcomingTasks.length;
+  const totalTasks = completedTasks.length;
 
   // ============================================================
   // TOGGLE OPTIONS
@@ -605,15 +514,12 @@ const HistoryScreen = ({ navigation, route }) => {
       style={[
         styles.container,
         {
-          backgroundColor:
-            theme.bg || (isDark ? '#111827' : '#F9FAFB'),
+          backgroundColor: theme.bg || (isDark ? '#111827' : '#F9FAFB'),
         },
       ]}
     >
       <StatusBar
-        barStyle={
-          isDark ? 'light-content' : 'dark-content'
-        }
+        barStyle={isDark ? 'light-content' : 'dark-content'}
         backgroundColor={statusBarBg}
       />
 
@@ -639,11 +545,7 @@ const HistoryScreen = ({ navigation, route }) => {
           }}
           activeOpacity={0.6}
         >
-          <Icon
-            name="arrow-back"
-            size={22}
-            color={primaryTextColor}
-          />
+          <Icon name="arrow-back" size={22} color={primaryTextColor} />
         </TouchableOpacity>
 
         <View style={styles.headerTitleContainer}>
@@ -674,9 +576,7 @@ const HistoryScreen = ({ navigation, route }) => {
           style={[
             styles.toggleContainer,
             {
-              backgroundColor: isDark
-                ? '#1F2937'
-                : '#E5E7EB',
+              backgroundColor: isDark ? '#1F2937' : '#E5E7EB',
             },
           ]}
         >
@@ -705,11 +605,7 @@ const HistoryScreen = ({ navigation, route }) => {
                 <Icon
                   name={option.icon}
                   size={15}
-                  color={
-                    isActive
-                      ? '#2563EB'
-                      : secondaryTextColor
-                  }
+                  color={isActive ? '#2563EB' : secondaryTextColor}
                   style={styles.toggleIcon}
                 />
 
@@ -720,12 +616,8 @@ const HistoryScreen = ({ navigation, route }) => {
                   style={[
                     styles.toggleText,
                     {
-                      color: isActive
-                        ? primaryTextColor
-                        : secondaryTextColor,
-                      fontWeight: isActive
-                        ? '700'
-                        : '500',
+                      color: isActive ? primaryTextColor : secondaryTextColor,
+                      fontWeight: isActive ? '700' : '500',
                     },
                   ]}
                 >
@@ -759,62 +651,17 @@ const HistoryScreen = ({ navigation, route }) => {
           </View>
         ) : (
           <>
-            {/* PENDING */}
-            {pendingTasks.length > 0 && (
-              <View style={styles.sectionContainer}>
-                {renderSectionHeader(
-                  'PENDING',
-                  pendingTasks.length,
-                  '#F59E0B',
-                )}
-
-                {pendingTasks.map((item, index) =>
-                  renderTask(
-                    item,
-                    index,
-                    false,
-                    '#F59E0B',
-                  ),
-                )}
-              </View>
-            )}
-
-            {/* DONE */}
+            {/* COMPLETED TASKS ONLY */}
             {completedTasks.length > 0 && (
               <View style={styles.sectionContainer}>
                 {renderSectionHeader(
-                  'DONE',
+                  'COMPLETED',
                   completedTasks.length,
                   '#10B981',
                 )}
 
                 {completedTasks.map((item, index) =>
-                  renderTask(
-                    item,
-                    index,
-                    true,
-                    '#10B981',
-                  ),
-                )}
-              </View>
-            )}
-
-            {/* UPCOMING / TODAY */}
-            {upcomingTasks.length > 0 && (
-              <View style={styles.sectionContainer}>
-                {renderSectionHeader(
-                  'UPCOMING / TODAY',
-                  upcomingTasks.length,
-                  '#3B82F6',
-                )}
-
-                {upcomingTasks.map((item, index) =>
-                  renderTask(
-                    item,
-                    index,
-                    false,
-                    '#3B82F6',
-                  ),
+                  renderTask(item, index, true, '#10B981'),
                 )}
               </View>
             )}
@@ -826,9 +673,7 @@ const HistoryScreen = ({ navigation, route }) => {
                   style={[
                     styles.emptyIconCircle,
                     {
-                      backgroundColor: isDark
-                        ? '#1F2937'
-                        : '#E5E7EB',
+                      backgroundColor: isDark ? '#1F2937' : '#E5E7EB',
                     },
                   ]}
                 >
@@ -853,7 +698,7 @@ const HistoryScreen = ({ navigation, route }) => {
                     },
                   ]}
                 >
-                  There is no task history
+                  No completed tasks yet
                 </Text>
 
                 <Text
@@ -865,10 +710,10 @@ const HistoryScreen = ({ navigation, route }) => {
                   ]}
                 >
                   {type === 'location'
-                    ? 'No location based tasks yet. Tasks with a saved place will appear here.'
+                    ? 'Completed location-based tasks will appear here.'
                     : type === 'time'
-                    ? 'No time based tasks yet. Tasks with a due date and time will appear here.'
-                    : 'No non time based tasks yet. Tasks without a due date and time will appear here.'}
+                    ? 'Completed time-based tasks will appear here.'
+                    : 'Completed non-time-based tasks will appear here.'}
                 </Text>
               </View>
             ) : null}

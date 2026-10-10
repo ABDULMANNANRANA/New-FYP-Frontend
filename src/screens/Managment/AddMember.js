@@ -38,19 +38,57 @@ const goToLogin = (navigation) => {
   });
 };
 
+const normalizeGroupId = value => {
+  if (value === null || value === undefined || String(value).trim() === '') {
+    return null;
+  }
+
+  const numericId = Number(value);
+  return Number.isSafeInteger(numericId) && numericId > 0
+    ? String(numericId)
+    : null;
+};
+
+const readGroupId = group =>
+  normalizeGroupId(
+    group?.id ?? group?.groupId ?? group?.Id ?? group?.GroupId
+  );
+
+const readGroupName = group =>
+  String(
+    group?.name ??
+      group?.groupName ??
+      group?.Name ??
+      group?.GroupName ??
+      ''
+  ).trim();
+
 const AddMember = ({ navigation, route }) => {
   const { theme } = useTheme();
 
-  const groupIdParam = route?.params?.groupId || null;
+  const groupIdParam = normalizeGroupId(
+    route?.params?.groupId ??
+      route?.params?.GroupId ??
+      route?.params?.group?.id ??
+      route?.params?.group?.groupId ??
+      route?.params?.group?.Id ??
+      route?.params?.group?.GroupId
+  );
+  const groupNameParam = String(
+    route?.params?.groupName ??
+      route?.params?.GroupName ??
+      route?.params?.group?.name ??
+      ''
+  ).trim();
 
-  const [phoneNumber, setPhoneNumber] = useState("");
-  const [memberName, setMemberName] = useState("");
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [memberName, setMemberName] = useState('');
   const [loading, setLoading] = useState(false);
 
   // Group picker
   const [groups, setGroups] = useState([]);
   const [selectedGroupId, setSelectedGroupId] = useState(groupIdParam);
-  const [selectedGroupName, setSelectedGroupName] = useState("");
+  const [selectedGroupName, setSelectedGroupName] = useState(groupNameParam);
   const [showGroupPicker, setShowGroupPicker] = useState(false);
   const [loadingGroups, setLoadingGroups] = useState(false);
 
@@ -59,7 +97,16 @@ const AddMember = ({ navigation, route }) => {
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [showContacts, setShowContacts] = useState(false);
 
-  const effectiveGroupId = groupIdParam || selectedGroupId;
+  const normalizedSelectedGroupId = normalizeGroupId(selectedGroupId);
+  const groupMatchedByName = groups.find(
+    group =>
+      readGroupName(group).toLowerCase() ===
+      selectedGroupName.trim().toLowerCase()
+  );
+  const effectiveGroupId =
+    groupIdParam ??
+    normalizedSelectedGroupId ??
+    readGroupId(groupMatchedByName);
 
   useEffect(() => {
     fetchGroups();
@@ -126,7 +173,51 @@ const AddMember = ({ navigation, route }) => {
       console.log("Fetch Groups Response:", data);
 
       if (response.ok && data?.success) {
-        setGroups(Array.isArray(data.data) ? data.data : []);
+        const responseGroups = Array.isArray(data?.data)
+          ? data.data
+          : Array.isArray(data?.groups)
+            ? data.groups
+            : [];
+
+        const normalizedGroups = responseGroups
+          .map(group => ({
+            ...group,
+            id: readGroupId(group),
+            name: readGroupName(group),
+            members: Array.isArray(group?.members)
+              ? group.members
+              : Array.isArray(group?.Members)
+                ? group.Members
+                : [],
+          }))
+          .filter(group => group.id);
+
+        setGroups(normalizedGroups);
+
+        const routeGroup = groupIdParam
+          ? normalizedGroups.find(group => group.id === groupIdParam)
+          : null;
+        const selectedGroup = normalizedSelectedGroupId
+          ? normalizedGroups.find(
+              group => group.id === normalizedSelectedGroupId
+            )
+          : null;
+        const namedGroup = groupNameParam
+          ? normalizedGroups.find(
+              group =>
+                group.name.toLowerCase() === groupNameParam.toLowerCase()
+            )
+          : null;
+        const groupToSelect =
+          routeGroup ||
+          selectedGroup ||
+          namedGroup ||
+          (normalizedGroups.length === 1 ? normalizedGroups[0] : null);
+
+        if (groupToSelect) {
+          setSelectedGroupId(groupToSelect.id);
+          setSelectedGroupName(groupToSelect.name);
+        }
       } else {
         Alert.alert("Error", data?.message || "Failed to load groups.");
       }
@@ -324,9 +415,20 @@ const AddMember = ({ navigation, route }) => {
   // ==========================================
   // SELECT GROUP
   // ==========================================
-  const selectGroup = (group) => {
-    setSelectedGroupId(group.id);
-    setSelectedGroupName(group.name);
+  const selectGroup = group => {
+    const groupId = readGroupId(group);
+    const groupName = readGroupName(group);
+
+    if (!groupId) {
+      Alert.alert(
+        'Invalid Group',
+        'This group did not include a valid ID. Refresh the group list or contact support.'
+      );
+      return;
+    }
+
+    setSelectedGroupId(groupId);
+    setSelectedGroupName(groupName);
     setShowGroupPicker(false);
   };
 
@@ -580,10 +682,10 @@ const AddMember = ({ navigation, route }) => {
             <TouchableOpacity
               style={[
                 styles.addBtn,
-                (!effectiveGroupId || loading) && styles.btnDisabled,
+                loading && styles.btnDisabled,
               ]}
               onPress={AddFunction}
-              disabled={!effectiveGroupId || loading}
+              disabled={loading}
               activeOpacity={0.8}
             >
               {loading ? (

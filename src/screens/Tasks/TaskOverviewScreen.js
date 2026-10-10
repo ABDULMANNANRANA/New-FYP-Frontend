@@ -198,14 +198,46 @@ const TaskOverviewScreen = ({ navigation, route }) => {
   const radiusMeters = taskRadiusMeters(task);
   const geofenceOn = hasPlace && task?.geofenceEnabled !== false;
 
-  const hasTimeInfo = Boolean(task?.dueDate || task?.dueTime);
+  // IsTimeBased is the source of truth. A due date is present for both
+  // time-based and non-time-based tasks, so it must not be used to infer mode.
+  const dueDateValue = task?.dueDate ?? task?.DueDate ?? null;
+  const dueTimeValue = task?.dueTime ?? task?.DueTime ?? null;
+  const hasDateInfo = Boolean(dueDateValue);
+  const dueTimeText =
+    dueTimeValue === null || dueTimeValue === undefined
+      ? ''
+      : String(dueTimeValue).trim();
+  // A due date alone does not make a task time-based. Treat a time as present
+  // only when the API supplies an actual clock value (e.g. 09:30 or 09:30:00).
+  const hasDueTime = /^\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(dueTimeText);
+  const hasScheduleInfo = hasDateInfo || hasDueTime;
 
-  const taskTypeLabel =
-    hasPlace && !hasTimeInfo
-      ? 'LOCATION BASED'
-      : task?.isTimeBased || hasTimeInfo
-        ? 'TIME BASED'
-        : 'NON TIME BASED';
+  const rawIsTimeBased = task?.isTimeBased ?? task?.IsTimeBased;
+  const flagSaysTimeBased =
+    rawIsTimeBased === true ||
+    String(rawIsTimeBased).trim().toLowerCase() === 'true' ||
+    String(rawIsTimeBased).trim() === '1';
+  // Time Based requires both the saved flag and a real time. This also
+  // handles older/inconsistent records whose flag is true but DueTime is null.
+  const isTimeBasedTask = hasDueTime &&
+    (rawIsTimeBased === null || rawIsTimeBased === undefined
+      ? true
+      : flagSaysTimeBased);
+
+  // Older place-only tasks have coordinates but no date/time schedule.
+  const isLocationOnlyTask = hasPlace && !hasScheduleInfo;
+
+  const taskTypeLabel = isLocationOnlyTask
+    ? 'LOCATION BASED'
+    : isTimeBasedTask
+      ? 'TIME BASED'
+      : 'NON TIME BASED';
+
+  const taskTypeColor = isLocationOnlyTask
+    ? '#1D4ED8'
+    : isTimeBasedTask
+      ? '#7C3AED'
+      : '#047857';
 
   // "You are 120 m away" — only with a live position.
   const distanceFromMe = hasPlace && position
@@ -572,28 +604,28 @@ const TaskOverviewScreen = ({ navigation, route }) => {
             <View
               style={[
                 styles.typeBadge,
-                hasPlace && !hasTimeInfo
+                isLocationOnlyTask
                   ? styles.typeLocationBg
-                  : styles.typeTimeBg,
+                  : isTimeBasedTask
+                    ? styles.typeTimeBg
+                    : styles.typeNonTimeBg,
               ]}
             >
               <Icon
                 name={
-                  hasPlace && !hasTimeInfo
+                  isLocationOnlyTask
                     ? 'location-outline'
-                    : task?.isTimeBased || hasTimeInfo
+                    : isTimeBasedTask
                       ? 'time-outline'
                       : 'list-outline'
                 }
                 size={12}
-                color={hasPlace && !hasTimeInfo ? '#1D4ED8' : '#7C3AED'}
+                color={taskTypeColor}
               />
               <Text
                 style={[
                   styles.typeBadgeText,
-                  {
-                    color: hasPlace && !hasTimeInfo ? '#1D4ED8' : '#7C3AED',
-                  },
+                  { color: taskTypeColor },
                 ]}
               >
                 {taskTypeLabel}
@@ -659,32 +691,37 @@ const TaskOverviewScreen = ({ navigation, route }) => {
               </View>
             </View>
 
-            {/* DATE / TIME — only for tasks that have a due slot */}
-            {hasTimeInfo ? (
+            {/* Show a date for both schedule types; show time only when the
+                task is time-based. */}
+            {hasScheduleInfo ? (
               <View style={styles.infoRow}>
-                <View style={styles.infoItem}>
-                  <View style={styles.infoIconWrapper}>
-                    <Icon name="calendar-outline" size={16} color="#3B82F6" />
+                {hasDateInfo ? (
+                  <View style={styles.infoItem}>
+                    <View style={styles.infoIconWrapper}>
+                      <Icon name="calendar-outline" size={16} color="#3B82F6" />
+                    </View>
+                    <View style={styles.infoTextGroup}>
+                      <Text style={styles.infoLabel}>DATE</Text>
+                      <Text style={[styles.infoValue, { color: textColor }]}>
+                        {formatDate(dueDateValue) || 'N/A'}
+                      </Text>
+                    </View>
                   </View>
-                  <View style={styles.infoTextGroup}>
-                    <Text style={styles.infoLabel}>DATE</Text>
-                    <Text style={[styles.infoValue, { color: textColor }]}>
-                      {formatDate(task?.dueDate) || 'N/A'}
-                    </Text>
-                  </View>
-                </View>
+                ) : null}
 
-                <View style={styles.infoItem}>
-                  <View style={styles.infoIconWrapper}>
-                    <Icon name="time-outline" size={16} color="#3B82F6" />
+                {isTimeBasedTask && hasDueTime ? (
+                  <View style={styles.infoItem}>
+                    <View style={styles.infoIconWrapper}>
+                      <Icon name="time-outline" size={16} color="#3B82F6" />
+                    </View>
+                    <View style={styles.infoTextGroup}>
+                      <Text style={styles.infoLabel}>TIME</Text>
+                      <Text style={[styles.infoValue, { color: textColor }]}>
+                        {formatTime(dueTimeValue) || 'N/A'}
+                      </Text>
+                    </View>
                   </View>
-                  <View style={styles.infoTextGroup}>
-                    <Text style={styles.infoLabel}>TIME</Text>
-                    <Text style={[styles.infoValue, { color: textColor }]}>
-                      {formatTime(task?.dueTime) || 'N/A'}
-                    </Text>
-                  </View>
-                </View>
+                ) : null}
               </View>
             ) : null}
           </View>
@@ -839,22 +876,25 @@ const TaskOverviewScreen = ({ navigation, route }) => {
             </View>
           </TouchableOpacity>
 
-          {/* FORWARD */}
-          <TouchableOpacity
-            style={[styles.primaryBtn, styles.secondaryBtn]}
-            onPress={handleForward}
-            activeOpacity={0.8}
-          >
-            <View style={styles.btnContent}>
-              <Text style={styles.primaryText}>FORWARD TO</Text>
-              <Icon
-                name="arrow-forward"
-                size={18}
-                color="#FFFFFF"
-                style={styles.btnIconRight}
-              />
-            </View>
-          </TouchableOpacity>
+          {/* Only active tasks can be forwarded. Hide while the detail API
+              is loading so a completed task never briefly shows this action. */}
+          {!detailLoading && !completed ? (
+            <TouchableOpacity
+              style={[styles.primaryBtn, styles.secondaryBtn]}
+              onPress={handleForward}
+              activeOpacity={0.8}
+            >
+              <View style={styles.btnContent}>
+                <Text style={styles.primaryText}>FORWARD TO</Text>
+                <Icon
+                  name="arrow-forward"
+                  size={18}
+                  color="#FFFFFF"
+                  style={styles.btnIconRight}
+                />
+              </View>
+            </TouchableOpacity>
+          ) : null}
         </View>
       </ScrollView>
 
@@ -1026,6 +1066,10 @@ const styles = StyleSheet.create({
 
   typeTimeBg: {
     backgroundColor: '#EDE9FE',
+  },
+
+  typeNonTimeBg: {
+    backgroundColor: '#D1FAE5',
   },
 
   typeBadgeText: {

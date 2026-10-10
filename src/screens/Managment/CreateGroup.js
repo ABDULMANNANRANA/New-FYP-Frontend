@@ -78,112 +78,148 @@ const CreateGroup = ({ navigation }) => {
       const headers = await getAuthHeaders();
 
       if (!headers) {
-        Alert.alert(
-          'Session Expired',
-          'Please login again.',
-          [
-            {
-              text: 'OK',
-              onPress: () => goToLogin(navigation),
-            },
-          ]
-        );
+        Alert.alert('Session Expired', 'Please login again.', [
+          {
+            text: 'OK',
+            onPress: () => goToLogin(navigation),
+          },
+        ]);
         return;
       }
 
-      const response = await fetch(`${BASE_URL}/User/groups`, {
-        method: 'GET',
-        headers,
-      });
+      const [groupsResult, contactsResult] = await Promise.allSettled([
+        fetch(`${BASE_URL}/User/groups`, { method: 'GET', headers }),
+        fetch(`${BASE_URL}/User/contacts`, { method: 'GET', headers }),
+      ]);
 
-      console.log('Fetch Groups Status:', response.status);
+      const groupsResponse =
+        groupsResult.status === 'fulfilled' ? groupsResult.value : null;
+      const contactsResponse =
+        contactsResult.status === 'fulfilled' ? contactsResult.value : null;
 
-      let res;
+      const readJson = async response => {
+        if (!response) return {};
+        try {
+          return await response.json();
+        } catch (error) {
+          return {};
+        }
+      };
 
-      try {
-        res = await response.json();
-      } catch (error) {
-        throw new Error('Invalid response received from server.');
-      }
+      const [res, savedContactsRes] = await Promise.all([
+        readJson(groupsResponse),
+        readJson(contactsResponse),
+      ]);
 
-      console.log('Fetch Groups Response:', res);
-
-      if (response.status === 401) {
-        Alert.alert(
-          'Session Expired',
-          'Please login again.',
-          [
-            {
-              text: 'OK',
-              onPress: () => goToLogin(navigation),
-            },
-          ]
-        );
+      if (groupsResponse?.status === 401 || contactsResponse?.status === 401) {
+        Alert.alert('Session Expired', 'Please login again.', [
+          {
+            text: 'OK',
+            onPress: () => goToLogin(navigation),
+          },
+        ]);
         return;
       }
 
-      if (!response.ok) {
+      const groupsAvailable = !!groupsResponse?.ok && !!res?.success;
+      const contactsAvailable =
+        !!contactsResponse?.ok && !!savedContactsRes?.success;
+
+      if (!groupsAvailable && !contactsAvailable) {
+        const requestError =
+          groupsResult.status === 'rejected'
+            ? groupsResult.reason
+            : contactsResult.status === 'rejected'
+              ? contactsResult.reason
+              : null;
         throw new Error(
           res?.message ||
-          `Failed to fetch contacts. Status: ${response.status}`
+            savedContactsRes?.message ||
+            requestError?.message ||
+            'Unable to fetch your contacts.',
         );
       }
 
-      if (res?.success) {
-        const seen = new Set();
-        const list = [];
+      const responseGroups = Array.isArray(res?.data)
+        ? res.data
+        : Array.isArray(res?.groups)
+          ? res.groups
+          : [];
+      const personalContacts = Array.isArray(savedContactsRes?.data)
+        ? savedContactsRes.data
+        : Array.isArray(savedContactsRes?.contacts)
+          ? savedContactsRes.contacts
+          : [];
 
-        (res.data || []).forEach(group => {
-          (group.members || []).forEach(member => {
-            const name =
-              member.displayName ||
-              member.name ||
-              `${member.firstName || ''} ${member.lastName || ''}`.trim();
+      const list = [];
+      const contactIndexes = new Map();
+      const addContact = contact => {
+        const name = String(
+          contact?.name ||
+            contact?.displayName ||
+            `${contact?.firstName || ''} ${contact?.lastName || ''}`,
+        ).trim();
+        const phone = String(contact?.phone || contact?.phoneNumber || '').trim();
+        const userId = contact?.userId ?? contact?.UserId ?? null;
 
-            const phone =
-              member.phone ||
-              member.phoneNumber ||
-              '';
+        if (!name || name.toLowerCase() === 'unknown') return;
 
-            const userId =
-              member.userId ??
-              member.id ??
-              member.UserId ??
-              member.Id ??
-              null;
+        const phoneDigits = phone.replace(/\D/g, '');
+        const key = phoneDigits
+          ? `phone_${phoneDigits}`
+          : userId != null
+            ? `user_${userId}`
+            : `name_${name.toLowerCase()}`;
+        const existingIndex = contactIndexes.get(key);
+        const isRegistered =
+          !!contact?.isRegistered || (userId != null && !contact?.isPersonal);
 
-            if (!name || name === 'Unknown') {
-              return;
-            }
+        if (existingIndex !== undefined) {
+          const existing = list[existingIndex];
+          list[existingIndex] = {
+            ...existing,
+            id: existing.id ?? contact?.id,
+            userId: existing.userId ?? (isRegistered ? userId : null),
+            name: contact?.isPersonal ? name : existing.name,
+            phone: existing.phone || phone,
+            isRegistered: existing.isRegistered || isRegistered,
+          };
+          return;
+        }
 
-            const key = `${String(userId || '')}_${name}_${phone}`;
-
-            if (seen.has(key)) {
-              return;
-            }
-
-            seen.add(key);
-
-            list.push({
-              id: `contact_${userId || Date.now()}_${group.id || ''}`,
-              userId: userId,
-              name,
-              phone,
-              isRegistered: !!userId,
-            });
-          });
+        contactIndexes.set(key, list.length);
+        list.push({
+          id: contact?.id ?? `contact_${userId || Date.now()}_${list.length}`,
+          userId: isRegistered ? userId : null,
+          name,
+          phone,
+          isRegistered,
+          isExternal: !isRegistered,
         });
+      };
 
-        setExistingContacts(list);
-      } else {
-        setExistingContacts([]);
-      }
+      // Registered group members are included for forwarding/task features.
+      responseGroups.forEach(group => {
+        const groupMembers = Array.isArray(group?.members)
+          ? group.members
+          : Array.isArray(group?.Members)
+            ? group.Members
+            : [];
+        groupMembers.forEach(member => addContact(member));
+      });
+
+      // Also let the WhatsApp-style group picker use contacts saved from the
+      // Contact screen, including people who do not have an app account.
+      personalContacts.forEach(contact =>
+        addContact({ ...contact, isPersonal: true, isRegistered: false }),
+      );
+
+      setExistingContacts(list);
     } catch (error) {
       console.log('fetchExistingContacts error:', error);
-
       Alert.alert(
         'Error',
-        error.message || 'Unable to fetch existing contacts.'
+        error.message || 'Unable to fetch existing contacts.',
       );
     } finally {
       setLoadingContacts(false);
@@ -267,7 +303,7 @@ const CreateGroup = ({ navigation }) => {
   };
 
   // ============================================================
-  // ADD REGISTERED MEMBER
+  // ADD A SAVED CONTACT OR REGISTERED MEMBER
   // ============================================================
   const addFromExisting = contact => {
     if (
@@ -284,15 +320,20 @@ const CreateGroup = ({ navigation }) => {
       return;
     }
 
+    const isRegistered = !!contact.isRegistered && contact.userId != null;
+    const contactId = contact.id || Date.now();
+
     setMembers(prev => [
       ...prev,
       {
-        id: `registered_${contact.userId || Date.now()}`,
-        userId: contact.userId,
+        id: isRegistered
+          ? `registered_${contact.userId}`
+          : `saved_${contactId}`,
+        userId: isRegistered ? contact.userId : null,
         name: contact.name,
         phone: contact.phone,
-        isRegistered: true,
-        isExternal: false,
+        isRegistered,
+        isExternal: !isRegistered,
       },
     ]);
 
@@ -855,18 +896,11 @@ const CreateGroup = ({ navigation }) => {
                 ) : (
                   existingContacts.map(
                     (contact, idx) => {
-                      const selected =
-                        members.some(
-                          member =>
-                            contact.userId &&
-                            member.userId &&
-                            String(
-                              member.userId
-                            ) ===
-                              String(
-                                contact.userId
-                              )
-                        );
+                      const selected = isAlreadyAdded(
+                        contact.name,
+                        contact.phone,
+                        contact.userId,
+                      );
 
                       return (
                         <TouchableOpacity

@@ -26,6 +26,7 @@ import GroupMembersScreen from '../screens/Managment/GroupMember';
 // FORWARD / CONTACT
 import ForwardTaskTo from '../screens/Managment/ForwardTaskTo';
 import ContactScreen from '../screens/User/ContactScreen';
+import AddContact from '../screens/User/AddContact';
 
 // HISTORY
 import HistoryScreen from '../screens/Tasks/HistoryScreen';
@@ -150,6 +151,11 @@ const MainStack = () => {
       <Stack.Screen
         name="ContactScreen"
         component={ContactScreen}
+      />
+
+      <Stack.Screen
+        name="AddContact"
+        component={AddContact}
       />
 
       {/* =========================

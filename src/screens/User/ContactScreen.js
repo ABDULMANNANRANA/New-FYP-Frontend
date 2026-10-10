@@ -15,6 +15,8 @@ import {
   RefreshControl,
   ActivityIndicator,
   Alert,
+  Modal,
+  Pressable,
   StatusBar,
   Platform,
 } from 'react-native';
@@ -71,18 +73,24 @@ const getAvatarColor = name => {
 // ============================================================
 
 const ContactScreen = ({ navigation }) => {
-  const { theme } = useTheme();
+  const { theme, isDark: themeIsDark } = useTheme();
 
   const [search, setSearch] = useState('');
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [showAddMenu, setShowAddMenu] = useState(false);
 
   // Dynamic Theme Fallbacks
-  const isDark = theme?.bg === '#121212' || theme?.bg === '#000000';
+  const isDark =
+    themeIsDark ||
+    theme?.bg === '#121212' ||
+    theme?.bg === '#000000' ||
+    theme?.bg === '#1E1E1E';
   const bgColor = theme?.bg || '#F8FAFC';
   const cardBg = theme?.card || '#FFFFFF';
   const textColor = theme?.text || '#0F172A';
+  const subTextColor = isDark ? '#94A3B8' : '#64748B';
   const navBg = theme?.bottomNav || '#0F172A';
 
   // ============================================================
@@ -152,115 +160,162 @@ const ContactScreen = ({ navigation }) => {
         }
 
         const token = await getToken();
+        if (!token) return;
 
-        if (!token) {
-          return;
-        }
+        const headers = {
+          Accept: 'application/json',
+          Authorization: `Bearer ${token}`,
+        };
 
-        const url = `${BASE_URL}/Task/groups`;
+        // Saved phone-book contacts and group members are both shown here.
+        // A failure in one source should not hide data from the other source.
+        const [groupsResult, savedContactsResult] = await Promise.allSettled([
+          fetch(`${BASE_URL}/Task/groups`, { method: 'GET', headers }),
+          fetch(`${BASE_URL}/User/contacts`, { method: 'GET', headers }),
+        ]);
 
-        console.log('Fetching Contacts:', url);
+        const groupsResponse =
+          groupsResult.status === 'fulfilled' ? groupsResult.value : null;
+        const savedContactsResponse =
+          savedContactsResult.status === 'fulfilled'
+            ? savedContactsResult.value
+            : null;
 
-        const response = await fetch(url, {
-          method: 'GET',
-          headers: {
-            Accept: 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-        });
+        const groupsData = groupsResponse
+          ? await getResponseData(groupsResponse)
+          : {};
+        const savedContactsData = savedContactsResponse
+          ? await getResponseData(savedContactsResponse)
+          : {};
 
-        const data = await getResponseData(response);
-
-        console.log('Fetch Contacts Response:', data);
-
-        if (response.status === 401) {
+        if (
+          groupsResponse?.status === 401 ||
+          savedContactsResponse?.status === 401
+        ) {
           Alert.alert('Session Expired', 'Please login again.', [
             {
               text: 'OK',
               onPress: () => goToLogin(navigation),
             },
           ]);
-
           return;
         }
 
-        if (!response.ok) {
+        const groupsAvailable =
+          !!groupsResponse?.ok && !!groupsData?.success;
+        const savedContactsAvailable =
+          !!savedContactsResponse?.ok && !!savedContactsData?.success;
+
+        if (!groupsAvailable && !savedContactsAvailable) {
+          const requestError =
+            groupsResult.status === 'rejected'
+              ? groupsResult.reason
+              : savedContactsResult.status === 'rejected'
+                ? savedContactsResult.reason
+                : null;
           throw new Error(
-            data?.message || `Server error: ${response.status}`
+            groupsData?.message ||
+              savedContactsData?.message ||
+              requestError?.message ||
+              'Failed to fetch contacts. Please check your connection.',
           );
         }
 
-        if (data?.success) {
-          const groups = Array.isArray(data.data) ? data.data : [];
+        if (!groupsAvailable) {
+          console.warn('Group members could not be loaded:', groupsData?.message);
+        }
+        if (!savedContactsAvailable) {
+          console.warn(
+            'Saved contacts could not be loaded:',
+            savedContactsData?.message,
+          );
+        }
 
-          const members = [];
-          const seen = new Set();
+        const contactMap = new Map();
+        const addContact = contact => {
+          const name = String(contact?.name || '').trim();
+          const phone = contact?.phone ? String(contact.phone).trim() : '';
 
-          groups.forEach(group => {
-            if (!Array.isArray(group?.members)) {
-              return;
-            }
+          if (!name || name.toLowerCase() === 'unknown') return;
 
-            group.members.forEach(member => {
-              const name = (
-                member?.displayName ||
-                member?.name ||
-                ''
-              ).trim();
+          const phoneDigits = phone.replace(/\D/g, '');
+          const key = phoneDigits
+            ? `phone_${phoneDigits}`
+            : `name_${name.toLowerCase()}`;
+          const existing = contactMap.get(key);
 
-              const phone = member?.phone
-                ? String(member.phone)
-                : '';
+          if (existing) {
+            contactMap.set(key, {
+              ...existing,
+              id: existing.id ?? contact.id,
+              phone: existing.phone || phone,
+              isRegistered: existing.isRegistered || !!contact.isRegistered,
+              role: existing.role || contact.role,
+            });
+            return;
+          }
 
-              if (!name || name.toLowerCase() === 'unknown') {
-                return;
-              }
+          contactMap.set(key, {
+            ...contact,
+            name,
+            phone,
+            isRegistered: !!contact.isRegistered,
+          });
+        };
 
-              const key = member?.id
-                ? `id_${member.id}`
-                : `${name}_${phone}`.toLowerCase();
+        const savedContacts = Array.isArray(savedContactsData?.data)
+          ? savedContactsData.data
+          : Array.isArray(savedContactsData?.contacts)
+            ? savedContactsData.contacts
+            : [];
 
-              if (seen.has(key)) {
-                return;
-              }
+        // Add saved contacts first so their custom names are kept if the same
+        // phone number is also present as a group member.
+        savedContacts.forEach(contact => {
+          addContact({
+            id: `personal_${contact?.id ?? contact?.phone ?? contact?.name}`,
+            name: contact?.name || contact?.displayName,
+            phone: contact?.phone || contact?.phoneNumber,
+            isRegistered: false,
+            isPersonal: true,
+          });
+        });
 
-              seen.add(key);
+        const groups = Array.isArray(groupsData?.data) ? groupsData.data : [];
+        groups.forEach(group => {
+          if (!Array.isArray(group?.members)) return;
 
-              members.push({
-                id: member?.id,
-                name,
-                phone,
-                role: member?.role,
-                isRegistered: !!member?.isRegistered,
-              });
+          group.members.forEach(member => {
+            const name = String(
+              member?.displayName || member?.name || '',
+            ).trim();
+            const phone = member?.phone ? String(member.phone) : '';
+
+            addContact({
+              id: member?.id,
+              name,
+              phone,
+              role: member?.role,
+              isRegistered: !!member?.isRegistered || member?.userId != null,
+              isPersonal: false,
             });
           });
+        });
 
-          console.log('Processed Contacts:', members);
-
-          setContacts(members);
-        } else {
-          console.log(
-            'Fetch Contacts Failed:',
-            data?.message || 'No contacts found'
-          );
-
-          setContacts([]);
-        }
+        setContacts(Array.from(contactMap.values()));
       } catch (error) {
         console.log('Fetch Contacts Error:', error);
-
         Alert.alert(
           'Error',
           error?.message ||
-            'Failed to fetch contacts. Please check your connection.'
+            'Failed to fetch contacts. Please check your connection.',
         );
       } finally {
         setLoading(false);
         setRefreshing(false);
       }
     },
-    [navigation]
+    [navigation],
   );
 
   // ============================================================
@@ -301,6 +356,11 @@ const ContactScreen = ({ navigation }) => {
       );
     });
   }, [search, contacts]);
+
+  const openAddMenuDestination = screenName => {
+    setShowAddMenu(false);
+    navigation.navigate(screenName);
+  };
 
   // ============================================================
   // RENDER
@@ -343,10 +403,18 @@ const ContactScreen = ({ navigation }) => {
 
         <TouchableOpacity
           style={styles.addButton}
-          onPress={() => navigation.navigate('AddMember')}
+          onPress={() => setShowAddMenu(true)}
           activeOpacity={0.8}
+          accessibilityRole="button"
+          accessibilityLabel="Add contact or create group"
+          accessibilityHint="Opens the contacts menu"
         >
-          <Icon name="person-add" size={20} color="#FFFFFF" />
+          <View style={styles.addIconWrapper}>
+            <Icon name="person-add-outline" size={21} color="#FFFFFF" />
+            <View style={styles.addDotsBadge}>
+              <Icon name="ellipsis-vertical" size={11} color="#FFFFFF" />
+            </View>
+          </View>
         </TouchableOpacity>
       </View>
 
@@ -375,7 +443,7 @@ const ContactScreen = ({ navigation }) => {
           {/* SECTION HEADER */}
           {filteredContacts.length > 0 && (
             <Text style={styles.sectionTitle}>
-              ALL MEMBERS ({filteredContacts.length})
+              CONTACTS ({filteredContacts.length})
             </Text>
           )}
 
@@ -447,8 +515,8 @@ const ContactScreen = ({ navigation }) => {
               </Text>
               <Text style={styles.emptySubtitle}>
                 {contacts.length === 0
-                  ? 'There are no group members synced yet. Add members to your groups to see them here.'
-                  : `We couldn't find any member matching "${search}".`}
+                  ? 'Your saved contacts and group members will appear here. Tap the add icon to save a contact or create a group.'
+                  : `We couldn't find any contact matching "${search}".`}
               </Text>
             </View>
           )}
@@ -480,7 +548,7 @@ const ContactScreen = ({ navigation }) => {
 
         <TouchableOpacity
           style={styles.iconBtn}
-          onPress={() => navigation.navigate('TimeBasedHistoryScreen')}
+          onPress={() => navigation.navigate('HistoryScreen')}
           activeOpacity={0.7}
         >
           <Icon name="time-outline" size={22} color="#94A3B8" />
@@ -496,6 +564,59 @@ const ContactScreen = ({ navigation }) => {
           <Text style={styles.navLabelInactive}>Settings</Text>
         </TouchableOpacity>
       </View>
+
+      <Modal
+        visible={showAddMenu}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setShowAddMenu(false)}
+      >
+        <View style={styles.actionMenuLayer}>
+          <Pressable
+            style={styles.actionMenuBackdrop}
+            onPress={() => setShowAddMenu(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Close add menu"
+          />
+
+          <View style={[styles.actionMenu, { backgroundColor: cardBg }]}>
+            <Text style={[styles.menuEyebrow, { color: subTextColor }]}>CREATE</Text>
+
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => openAddMenuDestination('AddContact')}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+            >
+              <View style={[styles.menuIconCircle, { backgroundColor: '#EFF6FF' }]}>
+                <Icon name="person-add-outline" size={19} color="#2563EB" />
+              </View>
+              <View style={styles.menuCopy}>
+                <Text style={[styles.menuLabel, { color: textColor }]}>Add Contact</Text>
+                <Text style={[styles.menuDescription, { color: subTextColor }]}>Save a name and phone number</Text>
+              </View>
+            </TouchableOpacity>
+
+            <View style={[styles.menuDivider, { backgroundColor: isDark ? '#3F3F46' : '#E2E8F0' }]} />
+
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => openAddMenuDestination('CreateGroup')}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+            >
+              <View style={[styles.menuIconCircle, { backgroundColor: '#ECFDF5' }]}>
+                <Icon name="people-outline" size={19} color="#059669" />
+              </View>
+              <View style={styles.menuCopy}>
+                <Text style={[styles.menuLabel, { color: textColor }]}>Create Group</Text>
+                <Text style={[styles.menuDescription, { color: subTextColor }]}>Choose people and name your group</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -558,6 +679,94 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.25,
     shadowRadius: 5,
+  },
+
+  addIconWrapper: {
+    width: 30,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  addDotsBadge: {
+    position: 'absolute',
+    right: -5,
+    top: -4,
+    width: 15,
+    height: 15,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1D4ED8',
+    borderWidth: 1,
+    borderColor: '#FFFFFF',
+  },
+
+  actionMenuLayer: {
+    flex: 1,
+  },
+
+  actionMenuBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15, 23, 42, 0.16)',
+  },
+
+  actionMenu: {
+    position: 'absolute',
+    top: 64,
+    right: 16,
+    width: 260,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 18,
+    elevation: 16,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 18,
+  },
+
+  menuEyebrow: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    marginLeft: 5,
+    marginBottom: 5,
+  },
+
+  menuItem: {
+    minHeight: 60,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 7,
+  },
+
+  menuIconCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  menuCopy: {
+    flex: 1,
+  },
+
+  menuLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+
+  menuDescription: {
+    fontSize: 11,
+    marginTop: 3,
+  },
+
+  menuDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginLeft: 50,
   },
 
   // SCROLL CONTENT

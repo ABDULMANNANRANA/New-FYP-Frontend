@@ -33,6 +33,33 @@ const goToLogin = navigation => {
   });
 };
 
+/**
+ * Robust response parser.
+ *
+ * Why this matters: when the backend throws an unexpected exception
+ * (for example a missing SQL table), ASP.NET may return an HTML
+ * developer-exception page or plain text instead of JSON. The previous
+ * code silently swallowed that into `{}` and the user always saw the
+ * generic "Unable to save this contact." message with no hint about the
+ * real problem. We now surface the real text.
+ */
+const parseResponseSafely = async response => {
+  try {
+    const text = await response.text();
+    if (!text) return { data: null, rawText: '' };
+
+    // Try JSON first (the expected case)
+    try {
+      return { data: JSON.parse(text), rawText: text };
+    } catch {
+      // Not JSON - return raw text so the caller can show it
+      return { data: null, rawText: text };
+    }
+  } catch (e) {
+    return { data: null, rawText: '' };
+  }
+};
+
 const AddContact = ({ navigation }) => {
   const { isDark, theme } = useTheme();
   const [name, setName] = useState('');
@@ -60,6 +87,13 @@ const AddContact = ({ navigation }) => {
       return;
     }
 
+    // Basic phone validation - must contain at least 4 digits
+    const phoneDigits = trimmedPhone.replace(/\D/g, '');
+    if (phoneDigits.length < 4) {
+      Alert.alert('Invalid phone number', 'Please enter a valid phone number.');
+      return;
+    }
+
     try {
       setSaving(true);
       const token = await AsyncStorage.getItem('token');
@@ -71,39 +105,95 @@ const AddContact = ({ navigation }) => {
         return;
       }
 
-      const response = await fetch(`${BASE_URL}/User/contacts`, {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ name: trimmedName, phone: trimmedPhone }),
-      });
-
-      let data = {};
+      let response;
       try {
-        data = await response.json();
-      } catch (error) {
-        // Keep the error message below useful when the API returns no JSON.
+        response = await fetch(`${BASE_URL}/User/contacts`, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ name: trimmedName, phone: trimmedPhone }),
+        });
+      } catch (networkErr) {
+        // fetch() only rejects on true network failures (DNS, no route,
+        // TLS error, timeout). Surface a clear message so the user knows
+        // it's a connection issue, not a data issue.
+        const lowerMsg = (networkErr?.message || '').toLowerCase();
+        const isNet =
+          lowerMsg.includes('network') ||
+          lowerMsg.includes('failed to fetch') ||
+          lowerMsg.includes('network request failed');
+
+        const msg = isNet
+          ? `Could not reach the server. Check your Wi-Fi / mobile data and verify the backend is running at ${BASE_URL}.`
+          : networkErr?.message ||
+            'Check your network connection and the backend API address.';
+        throw new Error(msg);
       }
 
+      const { data, rawText } = await parseResponseSafely(response);
+
       if (response.status === 401) {
+        await AsyncStorage.removeItem('token');
         Alert.alert('Session expired', 'Please log in again.', [
           { text: 'OK', onPress: () => goToLogin(navigation) },
         ]);
         return;
       }
 
-      if (!response.ok || !data?.success) {
-        throw new Error(data?.message || 'Unable to save this contact.');
+      // ---- Success path (HTTP 2xx with success === true) ----
+      if (response.ok && data && data.success === true) {
+        Alert.alert(
+          'Contact saved',
+          `${trimmedName} was added to your contacts.`,
+          [{ text: 'Done', onPress: () => navigation.goBack() }],
+        );
+        return;
       }
 
-      Alert.alert(
-        'Contact saved',
-        `${trimmedName} was added to your contacts.`,
-        [{ text: 'Done', onPress: () => navigation.goBack() }],
-      );
+      // ---- Error path ----
+      // 1) Prefer a JSON message from the server.
+      // 2) If the body is non-JSON (e.g. HTML dev-error page), show a
+      //    stripped snippet of the body.
+      // 3) Otherwise, use a status-specific friendly message.
+      let serverMessage = data?.message || data?.error || data?.title || data?.detail;
+
+      if (!serverMessage && typeof rawText === 'string' && rawText.length > 0) {
+        // Strip HTML tags so a dev-exception page is still readable.
+        const stripped = rawText
+          .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+          .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+          .replace(/<[^>]*>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        serverMessage =
+          stripped.length > 300 ? stripped.substring(0, 300) + '…' : stripped;
+      }
+
+      let friendlyMessage = serverMessage;
+      if (!friendlyMessage) {
+        switch (response.status) {
+          case 400:
+            friendlyMessage = 'The contact details you entered are invalid.';
+            break;
+          case 404:
+            friendlyMessage = 'The contacts service is not available right now.';
+            break;
+          case 409:
+            friendlyMessage = 'A contact with this phone number already exists.';
+            break;
+          case 500:
+            friendlyMessage =
+              'The server could not save the contact. The PersonalContacts table may be missing in the database - run the EF migration or the included SQL script.';
+            break;
+          default:
+            friendlyMessage = `Unable to save this contact (HTTP ${response.status}).`;
+        }
+      }
+
+      throw new Error(friendlyMessage);
     } catch (error) {
       Alert.alert(
         'Could not save contact',

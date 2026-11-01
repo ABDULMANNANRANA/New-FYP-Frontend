@@ -1,3 +1,4 @@
+import { clearSession } from '../../utils/session';
 import React, { useCallback, useState } from 'react';
 import {
   StatusBar,
@@ -20,11 +21,8 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { BASE_URL } from '../../config/api';
 import { useTheme } from '../../context/ThemeContext';
 
-// ============================================================
-// GO TO LOGIN
-// ============================================================
-
 const goToLogin = navigation => {
+  clearSession().catch(() => {});
   navigation.reset({
     index: 0,
     routes: [
@@ -42,10 +40,6 @@ const goToLogin = navigation => {
   });
 };
 
-// ============================================================
-// NOTIFICATION SCREEN
-// ============================================================
-
 const NotificationScreen = () => {
   const { isDark, theme } = useTheme();
   const navigation = useNavigation();
@@ -54,16 +48,11 @@ const NotificationScreen = () => {
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  // How many notifications are still unread (header badge).
   const unreadCount = notifications.filter(
     n => !n.isRead,
   ).length;
 
   const maxContentWidth = Math.min(windowWidth, 600);
-
-  // ============================================================
-  // GET JWT TOKEN
-  // ============================================================
 
   const getToken = useCallback(async () => {
     try {
@@ -90,10 +79,6 @@ const NotificationScreen = () => {
       return null;
     }
   }, [navigation]);
-
-  // ============================================================
-  // GET NOTIFICATION TYPE
-  // ============================================================
 
   const getNotificationType = notification => {
     const type = String(notification?.type || '').toLowerCase();
@@ -125,6 +110,8 @@ const NotificationScreen = () => {
       return 'done';
     }
 
+    if (type.includes('assign')) return 'assigned';
+
     if (type.includes('creat')) {
       return 'created';
     }
@@ -152,10 +139,6 @@ const NotificationScreen = () => {
     return 'default';
   };
 
-  // ============================================================
-  // GET NOTIFICATION ICON
-  // ============================================================
-
   const getNotificationIcon = item => {
     switch (item.type) {
       case 'pick':
@@ -169,6 +152,9 @@ const NotificationScreen = () => {
 
       case 'done':
         return 'checkmark-done-outline';
+
+      case 'assigned':
+        return 'person-add-outline';
 
       case 'created':
         return 'add-circle-outline';
@@ -187,10 +173,6 @@ const NotificationScreen = () => {
     }
   };
 
-  // ============================================================
-  // GET NOTIFICATION ICON COLOR
-  // ============================================================
-
   const getNotificationIconColor = item => {
     switch (item.type) {
       case 'pick':
@@ -205,6 +187,7 @@ const NotificationScreen = () => {
       case 'done':
         return '#2E7D32';
 
+      case 'assigned':
       case 'created':
         return '#1976D2';
 
@@ -221,10 +204,6 @@ const NotificationScreen = () => {
         return '#FF9800';
     }
   };
-
-  // ============================================================
-  // GET CARD BACKGROUND
-  // ============================================================
 
   const getCardBackground = item => {
     if (item.isRead) {
@@ -244,6 +223,7 @@ const NotificationScreen = () => {
       case 'done':
         return isDark ? '#1B2E1E' : '#E8F5E9';
 
+      case 'assigned':
       case 'created':
         return isDark ? '#1B2635' : '#E3F2FD';
 
@@ -260,10 +240,6 @@ const NotificationScreen = () => {
         return isDark ? '#2E261B' : '#FFF8E1';
     }
   };
-
-  // ============================================================
-  // GET TEXT COLOR
-  // ============================================================
 
   const getTextColor = item => {
     if (item.isRead) {
@@ -283,6 +259,7 @@ const NotificationScreen = () => {
       case 'done':
         return isDark ? '#A5D6A7' : '#1B5E20';
 
+      case 'assigned':
       case 'created':
         return isDark ? '#90CAF9' : '#0D47A1';
 
@@ -299,29 +276,6 @@ const NotificationScreen = () => {
         return isDark ? '#FFE082' : '#795548';
     }
   };
-
-  // ============================================================
-  // FETCH ALL NOTIFICATIONS
-  //
-  // BACKEND:
-  // GET /api/Notification/GetNotifications
-  // (fallback: GET /api/Notification)
-  //
-  // RESPONSE:
-  // [
-  //   {
-  //     id,
-  //     taskId,
-  //     senderId,
-  //     type,
-  //     message,
-  //     isRead,
-  //     sentAt,
-  //     senderName,
-  //     taskTitle
-  //   }
-  // ]
-  // ============================================================
 
   const fetchNotifications = useCallback(async () => {
     try {
@@ -344,15 +298,6 @@ const NotificationScreen = () => {
           Authorization: `Bearer ${token}`,
         },
       });
-
-      // ======================================================
-      // COMPATIBILITY FALLBACK
-      //
-      // Some backend builds expose the list as
-      // GET /api/Notification instead of
-      // GET /api/Notification/GetNotifications.
-      // If the first route is missing, retry the other one.
-      // ======================================================
 
       if (response.status === 404) {
         url = `${BASE_URL}/Notification`;
@@ -383,12 +328,8 @@ const NotificationScreen = () => {
 
       console.log('Notification Response:', data);
 
-      // ======================================================
-      // SESSION EXPIRED
-      // ======================================================
-
       if (response.status === 401) {
-        await AsyncStorage.removeItem('token');
+        await clearSession();
 
         Alert.alert('Session Expired', 'Please login again.', [
           {
@@ -400,10 +341,6 @@ const NotificationScreen = () => {
         return;
       }
 
-      // ======================================================
-      // SERVER ERROR
-      // ======================================================
-
       if (!response.ok) {
         throw new Error(
           data?.message ||
@@ -411,23 +348,11 @@ const NotificationScreen = () => {
         );
       }
 
-      // ======================================================
-      // BACKEND RETURNS DIRECT ARRAY
-      // ======================================================
-
       if (!Array.isArray(data)) {
         console.log('Unexpected notification response:', data);
         setNotifications([]);
         return;
       }
-
-      // ======================================================
-      // SKIP LEGACY SAMPLE ROWS ("dummy data")
-      //
-      // Rows seeded by the old schema script have no Type and
-      // no SenderId. Every real notification created by the
-      // API sets both. Never show those old sample rows.
-      // ======================================================
 
       const realData = data.filter(notification => {
         const type = notification?.type;
@@ -438,10 +363,6 @@ const NotificationScreen = () => {
 
         return hasType || senderId != null;
       });
-
-      // ======================================================
-      // MAP BACKEND DATA TO FRONTEND
-      // ======================================================
 
       const mappedNotifications = realData.map((notification, index) => {
         const notificationType = getNotificationType(notification);
@@ -498,22 +419,11 @@ const NotificationScreen = () => {
     }
   }, [getToken, navigation]);
 
-  // ============================================================
-  // REFRESH WHEN SCREEN GETS FOCUS
-  // ============================================================
-
   useFocusEffect(
     useCallback(() => {
       fetchNotifications();
     }, [fetchNotifications]),
   );
-
-  // ============================================================
-  // MARK NOTIFICATION AS READ
-  //
-  // BACKEND:
-  // PUT /api/Notification/{id}/read
-  // ============================================================
 
   const markAsRead = async notificationId => {
     try {
@@ -535,7 +445,7 @@ const NotificationScreen = () => {
       );
 
       if (response.status === 401) {
-        await AsyncStorage.removeItem('token');
+        await clearSession();
 
         Alert.alert('Session Expired', 'Please login again.', [
           {
@@ -553,10 +463,6 @@ const NotificationScreen = () => {
         return;
       }
 
-      // ======================================================
-      // UPDATE LOCAL STATE
-      // ======================================================
-
       setNotifications(previous =>
         previous.map(item =>
           item.notificationId === notificationId
@@ -571,12 +477,6 @@ const NotificationScreen = () => {
       console.log('Mark Read Error:', error);
     }
   };
-
-  // ============================================================
-  // MARK ALL NOTIFICATIONS AS READ
-  //
-  // PUT /api/Notification/read-all
-  // ============================================================
 
   const markAllAsRead = async () => {
     try {
@@ -631,10 +531,6 @@ const NotificationScreen = () => {
     }
   };
 
-  // ============================================================
-  // RENDER NOTIFICATION
-  // ============================================================
-
   const renderItem = ({ item }) => {
     const textColor = getTextColor(item);
     const cardBg = getCardBackground(item);
@@ -657,6 +553,7 @@ const NotificationScreen = () => {
           if (!item.isRead && item.notificationId) {
             markAsRead(item.notificationId);
           }
+          if (item.taskId) navigation.navigate('TaskOverviewScreen', { task: { id: item.taskId, title: item.title } });
         }}
       >
         {/* ==================================================
@@ -825,10 +722,6 @@ const NotificationScreen = () => {
       </TouchableOpacity>
     );
   };
-
-  // ============================================================
-  // SCREEN
-  // ============================================================
 
   return (
     <SafeAreaView
@@ -1095,10 +988,6 @@ const NotificationScreen = () => {
 
 export default NotificationScreen;
 
-// ============================================================
-// STYLES
-// ============================================================
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -1110,10 +999,6 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     paddingHorizontal: 16,
   },
-
-  // ========================================================
-  // HEADER
-  // ========================================================
 
   header: {
     flexDirection: 'row',
@@ -1166,10 +1051,6 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  // ========================================================
-  // LIST
-  // ========================================================
-
   listContent: {
     paddingTop: 8,
     paddingBottom: 100,
@@ -1179,10 +1060,6 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     justifyContent: 'center',
   },
-
-  // ========================================================
-  // CARD
-  // ========================================================
 
   card: {
     borderRadius: 16,
@@ -1206,18 +1083,10 @@ const styles = StyleSheet.create({
     }),
   },
 
-  // ========================================================
-  // ROW
-  // ========================================================
-
   row: {
     flexDirection: 'row',
     alignItems: 'flex-start',
   },
-
-  // ========================================================
-  // ICON / AVATAR
-  // ========================================================
 
   avatarPlaceholder: {
     width: 44,
@@ -1227,10 +1096,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: 12,
   },
-
-  // ========================================================
-  // TEXT
-  // ========================================================
 
   textContainer: {
     flex: 1,
@@ -1270,10 +1135,6 @@ const styles = StyleSheet.create({
     paddingLeft: 4,
   },
 
-  // ========================================================
-  // UNREAD DOT
-  // ========================================================
-
   unreadDot: {
     width: 8,
     height: 8,
@@ -1282,18 +1143,10 @@ const styles = StyleSheet.create({
     marginLeft: 6,
   },
 
-  // ========================================================
-  // DIVIDER
-  // ========================================================
-
   divider: {
     height: 1,
     marginVertical: 10,
   },
-
-  // ========================================================
-  // BOTTOM ROW
-  // ========================================================
 
   bottomRow: {
     flexDirection: 'row',
@@ -1320,10 +1173,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
 
-  // ========================================================
-  // LOADING
-  // ========================================================
-
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -1335,10 +1184,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '500',
   },
-
-  // ========================================================
-  // EMPTY
-  // ========================================================
 
   emptyContainer: {
     alignItems: 'center',
@@ -1366,10 +1211,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     opacity: 0.7,
   },
-
-  // ========================================================
-  // BOTTOM NAVIGATION
-  // ========================================================
 
   bottomBarContainer: {
     position: 'absolute',

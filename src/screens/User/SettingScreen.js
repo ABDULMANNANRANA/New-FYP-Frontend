@@ -1,1136 +1,632 @@
-import React, { useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
-  SafeAreaView,
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Switch,
+  ActivityIndicator,
+  Alert,
   ScrollView,
   StatusBar,
-  Platform,
-  Dimensions,
+  StyleSheet,
+  Switch,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
-
-import Ionicons from '@react-native-vector-icons/ionicons';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Ionicons from '@react-native-vector-icons/ionicons';
+import { clearSession } from '../../utils/session';
+import { apiClient } from '../../utils/apiClient';
+import { updateReminderPreferences } from '../../utils/reminderScheduler';
 import { useTheme } from '../../context/ThemeContext';
-import { navigationRef } from '../../navigation/navigationRef';
 import LiveLocationCard from '../../components/LiveLocationCard';
+import {
+  DATE_ONLY_SNOOZE_OPTIONS,
+  formatSnooze,
+  loadDateOnlyPreferences,
+  saveDateOnlySnoozeMinutes,
+} from '../../utils/dateOnlyReminders';
 
-const { width } = Dimensions.get('window');
+const SettingRow = ({
+  icon,
+  label,
+  subtitle,
+  children,
+  onPress,
+  disabled,
+  colors,
+  testID,
+}) => {
+  const content = (
+    <>
+      <Ionicons name={icon} size={21} color={colors.text} />
+      <View style={styles.rowCopy}>
+        <Text style={[styles.rowLabel, { color: colors.text }]}>{label}</Text>
+        {subtitle ? (
+          <Text style={[styles.subtitle, { color: colors.muted }]}>
+            {subtitle}
+          </Text>
+        ) : null}
+      </View>
+      {children || (
+        <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+      )}
+    </>
+  );
+  const rowStyle = [
+    styles.row,
+    { backgroundColor: colors.card, borderColor: colors.border },
+    disabled && styles.disabled,
+  ];
+  return onPress ? (
+    <TouchableOpacity
+      testID={testID}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      disabled={disabled}
+      onPress={onPress}
+      activeOpacity={0.7}
+      style={rowStyle}
+    >
+      {content}
+    </TouchableOpacity>
+  ) : (
+    <View testID={testID} style={rowStyle}>
+      {content}
+    </View>
+  );
+};
 
 const SettingScreen = ({ navigation }) => {
-  const { isDark, toggleTheme, theme } = useTheme();
-
+  const { isDark, toggleTheme } = useTheme();
+  const [profile, setProfile] = useState(null);
+  const [profileError, setProfileError] = useState('');
   const [notify, setNotify] = useState(true);
-  const [showDropdown, setShowDropdown] = useState(false);
-  const [snooze, setSnooze] = useState('5 min');
+  const [snooze, setSnooze] = useState(5);
+  const [dateSnooze, setDateSnooze] = useState(60);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [localLoaded, setLocalLoaded] = useState(false);
+  const [settingsError, setSettingsError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [dropdown, setDropdown] = useState(null);
+  const [showLocation, setShowLocation] = useState(false);
+  const [reload, setReload] = useState(0);
+  const lock = useRef(false);
+  const account = useRef(null);
+  const active = useRef(false);
+  const colors = isDark
+    ? {
+        bg: '#17231F',
+        card: '#26352E',
+        text: '#F0F5F1',
+        muted: '#ADBEB3',
+        border: '#3A4A40',
+        accent: '#78C2BC',
+        avatar: '#365E53',
+        header: '#304139',
+      }
+    : {
+        bg: '#DFE8DD',
+        card: '#F5F2E8',
+        text: '#26382F',
+        muted: '#66766B',
+        border: '#D6DCCE',
+        accent: '#6DAEB1',
+        avatar: '#A7D5C5',
+        header: '#F2F4E9',
+      };
 
+  useFocusEffect(
+    useCallback(() => {
+      active.current = true;
+      if (reload > 0) setDropdown(null);
+      const controller = new AbortController();
+      const alive = () => active.current && !controller.signal.aborted;
+      const load = async () => {
+        setSaving(lock.current);
+        setProfile(null);
+        setProfileError('');
+        setSettingsError('');
+        setSettingsLoaded(false);
+        setLocalLoaded(false);
+        const options = { signal: controller.signal };
+        await Promise.all([
+          (async () => {
+            try {
+              const result = await apiClient('/Account/profile', options);
+              if (alive()) setProfile(result?.data || {});
+            } catch (failure) {
+              if (alive()) setProfileError(failure.message);
+            }
+          })(),
+          (async () => {
+            try {
+              const result = await apiClient('/User/settings', options);
+              if (!alive()) return;
+              setNotify(result?.data?.notificationEnabled !== false);
+              setSnooze(Number(result?.data?.snoozeMinutes) || 5);
+              await toggleTheme(result?.data?.darkModeEnabled === true);
+              if (alive()) setSettingsLoaded(true);
+            } catch (failure) {
+              if (alive()) setSettingsError(failure.message);
+            }
+          })(),
+          (async () => {
+            try {
+              const id = await AsyncStorage.getItem('userId');
+              const value = await loadDateOnlyPreferences(id);
+              if (alive()) {
+                account.current = id;
+                setDateSnooze(value.snoozeMinutes);
+                setLocalLoaded(true);
+              }
+            } catch (failure) {
+              if (alive()) setSettingsError(failure.message);
+            }
+          })(),
+        ]);
+      };
+      load();
+      return () => {
+        active.current = false;
+        controller.abort();
+      };
+    }, [toggleTheme, reload]),
+  );
 
-  // Safe color fallbacks for theme compatibility
-  const textColor = theme.text || (isDark ? '#F9FAFB' : '#111827');
-  const subTextColor = isDark ? '#9CA3AF' : '#6B7280';
-  const cardBg = theme.card || (isDark ? '#1F2937' : '#FFFFFF');
-  const borderColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
-  const headerBoxBg = theme.headerBox || (isDark ? '#374151' : '#F3F4F6');
-  const activeIconBg = isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.04)';
+  const savePreferences = async patch => {
+    if (lock.current || !settingsLoaded) return;
+    lock.current = true;
+    setSaving(true);
+    const next = {
+      notificationEnabled: notify,
+      darkModeEnabled: isDark,
+      snoozeMinutes: snooze,
+      ...patch,
+    };
+    try {
+      await apiClient('/User/settings', {
+        method: 'PUT',
+        body: JSON.stringify(next),
+      });
+      if (!active.current) return;
+      setNotify(next.notificationEnabled);
+      setSnooze(next.snoozeMinutes);
+      await toggleTheme(next.darkModeEnabled);
+      await updateReminderPreferences(next.notificationEnabled);
+    } catch (failure) {
+      if (active.current) Alert.alert('Settings', failure.message);
+    } finally {
+      lock.current = false;
+      if (active.current) setSaving(false);
+    }
+  };
+  const saveDateSnooze = async minutes => {
+    if (lock.current || !localLoaded) return;
+    lock.current = true;
+    setSaving(true);
+    setDropdown(null);
+    try {
+      await saveDateOnlySnoozeMinutes(account.current, minutes);
+      if (active.current) setDateSnooze(minutes);
+    } catch (failure) {
+      if (active.current) Alert.alert('Settings', failure.message);
+    } finally {
+      lock.current = false;
+      if (active.current) setSaving(false);
+    }
+  };
+  const logout = async () => {
+    if (lock.current) return;
+    lock.current = true;
+    setSaving(true);
+    try {
+      await clearSession();
+    } catch (failure) {
+      if (active.current) Alert.alert('Logout', failure.message);
+    } finally {
+      lock.current = false;
+      if (active.current) setSaving(false);
+    }
+  };
+  const section = title => (
+    <Text
+      accessibilityRole="header"
+      style={[styles.section, { color: colors.text }]}
+    >
+      {title}
+    </Text>
+  );
+  const selector = (kind, label) => (
+    <>
+      <Text style={[styles.selection, { color: colors.text }]}>{label}</Text>
+      <Ionicons
+        name={dropdown === kind ? 'chevron-up' : 'chevron-down'}
+        size={14}
+        color={colors.muted}
+      />
+    </>
+  );
+  const optionsList = (kind, values, selected, onSelect) =>
+    dropdown === kind ? (
+      <View
+        style={[
+          styles.options,
+          { backgroundColor: colors.card, borderColor: colors.border },
+        ]}
+      >
+        {values.map(minutes => (
+          <TouchableOpacity
+            key={minutes}
+            testID={`${kind}-option-${minutes}`}
+            accessibilityRole="button"
+            accessibilityState={{ selected: minutes === selected }}
+            disabled={saving}
+            style={styles.option}
+            onPress={() => onSelect(minutes)}
+          >
+            <Text style={{ color: colors.text }}>
+              {kind === 'alarm' ? `${minutes} mins` : formatSnooze(minutes)}
+            </Text>
+            {minutes === selected ? (
+              <Ionicons name="checkmark" size={18} color={colors.accent} />
+            ) : null}
+          </TouchableOpacity>
+        ))}
+      </View>
+    ) : null;
+  const switchProps = {
+    disabled: saving || !settingsLoaded,
+    trackColor: { false: isDark ? '#536359' : '#B8C2B6', true: colors.accent },
+    thumbColor: '#FAFCF6',
+  };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.bg || (isDark ? '#111827' : '#F9FAFB') }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       <StatusBar
         barStyle={isDark ? 'light-content' : 'dark-content'}
-        backgroundColor={theme.bg || (isDark ? '#111827' : '#F9FAFB')}
+        backgroundColor={colors.bg}
       />
-
-      {/* ================= HEADER ================= */}
       <View style={styles.header}>
         <TouchableOpacity
+          accessibilityLabel="Go back"
+          accessibilityRole="button"
+          style={styles.back}
           onPress={() => navigation.goBack()}
-          style={styles.backButton}
-          activeOpacity={0.7}
-          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
-          <Ionicons
-            name="arrow-back"
-            size={22}
-            color={textColor}
-          />
+          <Ionicons name="arrow-back" size={23} color={colors.text} />
         </TouchableOpacity>
-
-        <View style={[styles.headerBox, { backgroundColor: headerBoxBg }]}>
-          <Ionicons
-            name="settings-outline"
-            size={16}
-            color={textColor}
-          />
-          <Text style={[styles.headerText, { color: textColor }]}>
+        <View style={[styles.headerBadge, { backgroundColor: colors.header }]}>
+          <Text style={[styles.headerTitle, { color: colors.text }]}>
             SETTINGS
           </Text>
         </View>
-
-        {/* Keeps header centered */}
-        <View style={styles.headerRightSpace} />
+        <View style={styles.back} />
       </View>
-
-      {/* Main Content Area */}
       <ScrollView
+        contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
-        bounces={false}
       >
-        {/* ================= PERSONAL INFO SECTION ================= */}
-        <Text style={[styles.sectionTitle, { color: subTextColor }]}>
-          Personal Info
-        </Text>
-
-        <View style={[styles.card, { backgroundColor: cardBg, borderColor }]}>
-          {/* HISTORY */}
-          <TouchableOpacity
-            style={styles.rowItem}
-            onPress={() => navigation.navigate('HistoryScreen')}
-            activeOpacity={0.7}
-          >
-            <View style={styles.left}>
-              <View style={[styles.iconContainer, { backgroundColor: activeIconBg }]}>
-                <Ionicons
-                  name="swap-horizontal-outline"
-                  size={20}
-                  color={textColor}
-                />
-              </View>
-              <Text style={[styles.text, { color: textColor }]}>
-                HISTORY
-              </Text>
-            </View>
-            <Ionicons
-              name="chevron-forward-outline"
-              size={18}
-              color={subTextColor}
-            />
-          </TouchableOpacity>
-
-          <View style={[styles.innerDivider, { backgroundColor: borderColor }]} />
-
-          {/* SNOOZE TIME */}
-          <TouchableOpacity
-            style={styles.rowItem}
-            onPress={() => setShowDropdown(!showDropdown)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.left}>
-              <View style={[styles.iconContainer, { backgroundColor: activeIconBg }]}>
-                <Ionicons
-                  name="time-outline"
-                  size={20}
-                  color={textColor}
-                />
-              </View>
-              <View style={styles.textContainer}>
-                <Text style={[styles.textLabel, { color: subTextColor }]}>
-                  Snooze Duration
-                </Text>
-                <Text style={[styles.text, { color: textColor }]}>
-                  Snooze Time : {snooze}
-                </Text>
-              </View>
-            </View>
-
-            <Ionicons
-              name={
-                showDropdown
-                  ? 'chevron-up-outline'
-                  : 'chevron-down-outline'
-              }
-              size={18}
-              color={subTextColor}
-            />
-          </TouchableOpacity>
-
-          {/* SNOOZE OPTIONS DROPDOWN */}
-          {showDropdown && (
-            <View style={[styles.dropdownContainer, { backgroundColor: isDark ? '#1F2937' : '#F8FAFC' }]}>
-              {['5 min', '10 min', '15 min'].map((item, index) => {
-                const isSelected = snooze === item;
-                return (
-                  <TouchableOpacity
-                    key={item}
-                    style={[
-                      styles.dropItem,
-                      index > 0 && { borderTopWidth: 1, borderTopColor: borderColor },
-                      isSelected && { backgroundColor: isDark ? 'rgba(58, 195, 92, 0.15)' : 'rgba(58, 195, 92, 0.1)' },
-                    ]}
-                    onPress={() => {
-                      setSnooze(item);
-                      setShowDropdown(false);
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <Text
-                      style={[
-                        styles.dropText,
-                        { color: isSelected ? '#3AC35C' : textColor, fontWeight: isSelected ? '700' : '500' },
-                      ]}
-                    >
-                      {item}
-                    </Text>
-                    {isSelected && (
-                      <Ionicons name="checkmark-sharp" size={16} color="#3AC35C" />
-                    )}
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          )}
-        </View>
-
-        {/* ================= PREFERENCES SECTION ================= */}
-        <Text style={[styles.sectionTitle, { color: subTextColor, marginTop: 24 }]}>
-          Preferences
-        </Text>
-
-        <View style={[styles.card, { backgroundColor: cardBg, borderColor }]}>
-          {/* NOTIFICATION */}
-          <View style={styles.rowItem}>
-            <View style={styles.left}>
-              <View style={[styles.iconContainer, { backgroundColor: activeIconBg }]}>
-                <Ionicons
-                  name="notifications-outline"
-                  size={20}
-                  color={textColor}
-                />
-              </View>
-              <Text style={[styles.text, { color: textColor }]}>
-                Notification
-              </Text>
-            </View>
-
-            <Switch
-              value={notify}
-              onValueChange={setNotify}
-              trackColor={{
-                false: isDark ? '#4B5563' : '#E5E7EB',
-                true: '#3AC35C',
-              }}
-              thumbColor="#fff"
-            />
+        {section('Personal Info')}
+        <View
+          testID="settings-profile"
+          style={[
+            styles.profile,
+            { backgroundColor: colors.card, borderColor: colors.border },
+          ]}
+        >
+          <View style={[styles.avatar, { backgroundColor: colors.avatar }]}>
+            <Ionicons name="person" size={24} color={colors.text} />
           </View>
-
-          <View style={[styles.innerDivider, { backgroundColor: borderColor }]} />
-
-          {/* DARK MODE */}
-          <View style={styles.rowItem}>
-            <View style={styles.left}>
-              <View style={[styles.iconContainer, { backgroundColor: activeIconBg }]}>
-                <Ionicons
-                  name="moon-outline"
-                  size={20}
-                  color={textColor}
-                />
+          <View style={styles.profileCopy}>
+            {profile ? (
+              <>
+                <Text
+                  testID="profile-name"
+                  style={[styles.name, { color: colors.text }]}
+                >
+                  {profile.fullName || 'Name not available'}
+                </Text>
+                <Text
+                  testID="profile-email"
+                  style={[styles.profileDetail, { color: colors.muted }]}
+                >
+                  {profile.email || 'Email not available'}
+                </Text>
+                <Text
+                  testID="profile-phone"
+                  style={[styles.profileDetail, { color: colors.muted }]}
+                >
+                  {profile.phoneNumber || 'Phone number not added'}
+                </Text>
+              </>
+            ) : profileError ? (
+              <>
+                <Text accessibilityRole="alert" style={{ color: colors.text }}>
+                  Unable to load profile
+                </Text>
+                <Text style={[styles.subtitle, { color: colors.muted }]}>
+                  {profileError}
+                </Text>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  onPress={() => setReload(value => value + 1)}
+                >
+                  <Text style={[styles.retry, { color: colors.text }]}>
+                    Retry
+                  </Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <View style={styles.loading}>
+                <ActivityIndicator color={colors.accent} />
+                <Text style={{ color: colors.muted }}>
+                  Loading your profile…
+                </Text>
               </View>
-              <Text style={[styles.text, { color: textColor }]}>
-                Dark Mode
-              </Text>
-            </View>
-
-            <Switch
-              value={isDark}
-              onValueChange={toggleTheme}
-              trackColor={{
-                false: isDark ? '#4B5563' : '#E5E7EB',
-                true: '#3AC35C',
-              }}
-              thumbColor="#fff"
-            />
+            )}
           </View>
         </View>
-
-        {/* ================= LIVE LOCATION ================= */}
-        <LiveLocationCard />
-
-        {/* ================= ACCOUNT ACTIONS ================= */}
-        <View style={styles.logoutWrapper}>
+        <SettingRow
+          colors={colors}
+          icon="time-outline"
+          label="Task History & Analytics"
+          testID="settings-history"
+          onPress={() => navigation.navigate('HistoryScreen')}
+        />
+        {section('Preferences')}
+        {settingsError ? (
           <TouchableOpacity
-            style={[styles.logoutBtn, { backgroundColor: isDark ? '#DC2626' : '#EF4444' }]}
-            onPress={() => navigation.navigate("AuthStack")}
-            activeOpacity={0.85}
+            accessibilityRole="button"
+            onPress={() => setReload(value => value + 1)}
+            style={styles.error}
           >
-            <Ionicons
-              name="log-out-outline"
-              size={20}
-              color="#FFFFFF"
-            />
-            <Text style={styles.logoutText}>
-              LOGOUT
+            <Text style={{ color: colors.text }}>
+              {settingsError} Tap to retry.
             </Text>
           </TouchableOpacity>
-        </View>
+        ) : null}
+        <SettingRow
+          colors={colors}
+          icon="notifications-outline"
+          label="Notifications & Alerts"
+        >
+          <Switch
+            testID="settings-notifications"
+            accessibilityLabel="Notifications & Alerts"
+            {...switchProps}
+            value={notify}
+            onValueChange={value =>
+              savePreferences({ notificationEnabled: value })
+            }
+          />
+        </SettingRow>
+        <SettingRow colors={colors} icon="moon-outline" label="Dark Mode">
+          <Switch
+            testID="settings-dark-mode"
+            accessibilityLabel="Dark Mode"
+            {...switchProps}
+            value={isDark}
+            onValueChange={value => savePreferences({ darkModeEnabled: value })}
+          />
+        </SettingRow>
+        <SettingRow
+          colors={colors}
+          icon="alarm-outline"
+          label="Alarm Snooze Interval"
+          subtitle="Applied to 30-min prior task alerts"
+          testID="settings-alarm-snooze"
+          disabled={saving || !settingsLoaded}
+          onPress={() => setDropdown(dropdown === 'alarm' ? null : 'alarm')}
+        >
+          {selector('alarm', `${snooze} mins`)}
+        </SettingRow>
+        {optionsList(
+          'alarm',
+          [...new Set([1, 3, 5, 10, 15, 30, snooze])].sort((a, b) => a - b),
+          snooze,
+          minutes => {
+            setDropdown(null);
+            savePreferences({ snoozeMinutes: minutes });
+          },
+        )}
+        <SettingRow
+          colors={colors}
+          icon="calendar-outline"
+          label="Date-Only Task Snooze"
+          subtitle="Snooze length for date-only tasks (they remind every 3 hours). Saved on this device."
+          testID="settings-date-snooze"
+          disabled={saving || !localLoaded}
+          onPress={() => setDropdown(dropdown === 'date' ? null : 'date')}
+        >
+          {selector('date', formatSnooze(dateSnooze))}
+        </SettingRow>
+        {optionsList(
+          'date',
+          DATE_ONLY_SNOOZE_OPTIONS,
+          dateSnooze,
+          saveDateSnooze,
+        )}
+        {saving ? (
+          <ActivityIndicator
+            testID="settings-saving"
+            color={colors.accent}
+            style={styles.saving}
+          />
+        ) : null}
+        {section('Security')}
+        <TouchableOpacity
+          testID="settings-logout"
+          accessibilityRole="button"
+          accessibilityLabel="Logout"
+          onPress={logout}
+          disabled={saving}
+          activeOpacity={0.85}
+          style={[styles.logoutButton, saving && styles.disabled]}
+        >
+          <Ionicons name="log-out-outline" size={20} color="#FFFFFF" />
+          <Text style={styles.logoutText}>LOGOUT</Text>
+        </TouchableOpacity>
+        <SettingRow
+          colors={colors}
+          icon="lock-closed-outline"
+          label="Change Password"
+          testID="settings-change-password"
+          disabled={saving}
+          onPress={() => navigation.navigate('ChangePasswordScreen')}
+        />
+        {section('Location')}
+        <SettingRow
+          colors={colors}
+          icon="location-outline"
+          label="Live Location & Alerts"
+          onPress={() => setShowLocation(value => !value)}
+        >
+          <Ionicons
+            name={showLocation ? 'chevron-up' : 'chevron-down'}
+            size={18}
+            color={colors.muted}
+          />
+        </SettingRow>
+        {showLocation ? <LiveLocationCard /> : null}
       </ScrollView>
-
-      {/* ================= BOTTOM NAVIGATION ================= */}
       <View
         style={[
           styles.bottom,
-          {
-            backgroundColor: theme.bottomNav || (isDark ? '#1F2937' : '#1E293B'),
-          },
+          { backgroundColor: isDark ? '#18271F' : '#35483D' },
         ]}
       >
-        {/* HOME */}
-        <TouchableOpacity
-          style={styles.iconBtn}
-          onPress={() => navigation.navigate('HomeDashboard')}
-          activeOpacity={0.7}
-        >
-          <Ionicons
-            name="home-outline"
-            size={22}
-            color="rgba(255,255,255,0.6)"
-          />
-        </TouchableOpacity>
-
-        {/* CONTACTS */}
-        <TouchableOpacity
-          style={styles.iconBtn}
-          onPress={() => navigation.navigate('ContactScreen')}
-          activeOpacity={0.7}
-        >
-          <Ionicons
-            name="people-outline"
-            size={22}
-            color="rgba(255,255,255,0.6)"
-          />
-        </TouchableOpacity>
-
-        {/* HISTORY */}
-        <TouchableOpacity
-          style={styles.iconBtn}
-          onPress={() => navigation.navigate('HistoryScreen')}
-          activeOpacity={0.7}
-        >
-          <Ionicons
-            name="time-outline"
-            size={22}
-            color="rgba(255,255,255,0.6)"
-          />
-        </TouchableOpacity>
-
-        {/* SETTINGS (ACTIVE) */}
-        <TouchableOpacity
-          style={styles.iconBtn}
-          onPress={() => navigation.navigate('SettingScreen')}
-          activeOpacity={0.7}
-        >
-          <View style={styles.activeTabIndicator}>
-            <Ionicons
-              name="settings"
-              size={22}
-              color="#FFFFFF"
-            />
-          </View>
-        </TouchableOpacity>
+        {[
+          ['home-outline', 'HomeDashboard', 'Home'],
+          ['people-outline', 'ContactScreen', 'Contacts'],
+          ['time-outline', 'HistoryScreen', 'History'],
+          ['settings', 'SettingScreen', 'Settings'],
+        ].map(([icon, route, label]) => (
+          <TouchableOpacity
+            key={route}
+            accessibilityRole="button"
+            accessibilityLabel={label}
+            accessibilityState={{ selected: route === 'SettingScreen' }}
+            onPress={() => navigation.navigate(route)}
+            style={styles.tab}
+          >
+            <View
+              style={[
+                styles.tabIcon,
+                route === 'SettingScreen' && styles.activeTab,
+              ]}
+            >
+              <Ionicons name={icon} size={22} color="#F2F6EE" />
+            </View>
+          </TouchableOpacity>
+        ))}
       </View>
     </SafeAreaView>
   );
 };
-
 export default SettingScreen;
 
-/* =====================================================
-   STYLES
-===================================================== */
-
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-
-  scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 110, // Extra clearance for floating bottom bar
-  },
-
-  /* ================= HEADER ================= */
-
+  container: { flex: 1 },
   header: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'android' ? 12 : 8,
-    paddingBottom: 14,
+    paddingVertical: 9,
   },
-
-  backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  back: {
+    width: 44,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
   },
-
-  headerRightSpace: {
-    width: 40,
-  },
-
-  headerBox: {
+  headerBadge: { paddingHorizontal: 32, paddingVertical: 7, borderRadius: 9 },
+  headerTitle: { fontSize: 19, fontWeight: '700', letterSpacing: 0.4 },
+  content: { paddingHorizontal: 18, paddingBottom: 24 },
+  section: { fontSize: 16, fontWeight: '700', marginTop: 22, marginBottom: 12 },
+  profile: {
     flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.1,
-        shadowRadius: 2,
-      },
-      android: {
-        elevation: 2,
-      },
-    }),
-  },
-
-  headerText: {
-    fontWeight: '700',
-    fontSize: 13,
-    letterSpacing: 0.8,
-    marginLeft: 8,
-  },
-
-  /* ================= SECTION & CARDS ================= */
-
-  sectionTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 1.2,
-    marginBottom: 8,
-    marginLeft: 4,
-  },
-
-  card: {
-    borderRadius: 16,
+    alignItems: 'flex-start',
+    borderRadius: 14,
     borderWidth: 1,
-    overflow: 'hidden',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.05,
-        shadowRadius: 6,
-      },
-      android: {
-        elevation: 1.5,
-      },
-    }),
+    padding: 16,
+    marginBottom: 7,
+    minHeight: 94,
   },
-
-  /* ================= ROW ITEMS ================= */
-
-  rowItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    minHeight: 56,
-  },
-
-  left: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-
-  iconContainer: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
+  avatar: {
+    width: 43,
+    height: 43,
+    borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
   },
-
-  textContainer: {
-    justifyContent: 'center',
+  profileCopy: { flex: 1, minWidth: 0 },
+  name: { fontSize: 16, fontWeight: '700', marginBottom: 3 },
+  profileDetail: { fontSize: 13, lineHeight: 19, flexShrink: 1 },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 54,
+    paddingHorizontal: 15,
+    paddingVertical: 11,
+    borderWidth: 1,
+    borderRadius: 13,
+    marginBottom: 7,
   },
-
-  textLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    marginBottom: 1,
-  },
-
-  text: {
-    fontSize: 15,
-    fontWeight: '600',
-    letterSpacing: 0.2,
-  },
-
-  innerDivider: {
-    height: 1,
-    width: '100%',
-  },
-
-  /* ================= DROPDOWN ================= */
-
-  dropdownContainer: {
-    marginHorizontal: 12,
-    marginBottom: 12,
+  rowCopy: { flex: 1, minWidth: 0 },
+  rowLabel: { fontSize: 14, fontWeight: '500', lineHeight: 20 },
+  subtitle: { fontSize: 12, lineHeight: 17, marginTop: 2 },
+  selection: { fontSize: 13, maxWidth: 78, textAlign: 'right' },
+  options: {
+    borderWidth: 1,
     borderRadius: 12,
-    overflow: 'hidden',
+    marginTop: -3,
+    marginBottom: 9,
+    paddingHorizontal: 15,
   },
-
-  dropItem: {
+  option: {
+    minHeight: 45,
+    paddingVertical: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
   },
-
-  dropText: {
-    fontSize: 14,
-  },
-
-  /* ================= LOGOUT ================= */
-
-  logoutWrapper: {
-    marginTop: 32,
-    alignItems: 'center',
-    width: '100%',
-  },
-
-  logoutBtn: {
+  logoutButton: {
+    backgroundColor: '#EF4444',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    width: '100%',
-    height: 52,
-    borderRadius: 14,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#EF4444',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.2,
-        shadowRadius: 8,
-      },
-      android: {
-        elevation: 3,
-      },
-    }),
+    gap: 10,
+    minHeight: 54,
+    padding: 14,
+    borderRadius: 13,
+    marginBottom: 7,
   },
-
   logoutText: {
     color: '#FFFFFF',
+    fontSize: 14,
     fontWeight: '700',
-    fontSize: 15,
-    letterSpacing: 1,
-    marginLeft: 8,
+    letterSpacing: 0.3,
   },
-
-  /* ================= BOTTOM NAV ================= */
-
-  bottom: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 64,
+  disabled: { opacity: 0.55 },
+  loading: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
     alignItems: 'center',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingHorizontal: 8,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: -4 },
-        shadowOpacity: 0.1,
-        shadowRadius: 8,
-      },
-      android: {
-        elevation: 12,
-      },
-    }),
+    gap: 9,
+    paddingVertical: 10,
   },
-
-  iconBtn: {
+  retry: { fontWeight: '700', paddingVertical: 12 },
+  error: { padding: 12 },
+  saving: { marginVertical: 5 },
+  bottom: { flexDirection: 'row', paddingVertical: 8, paddingHorizontal: 10 },
+  tab: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    height: '100%',
+    minHeight: 44,
   },
-
-  activeTabIndicator: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 6,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-  },
+  tabIcon: { padding: 10, borderRadius: 15 },
+  activeTab: { backgroundColor: '#5B7564' },
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// import React, { useState } from 'react';
-// import {
-//   SafeAreaView,
-//   View,
-//   Text,
-//   StyleSheet,
-//   TouchableOpacity,
-//   Switch,
-// } from 'react-native';
-
-// import Ionicons from '@react-native-vector-icons/ionicons';
-// import AsyncStorage from '@react-native-async-storage/async-storage';
-// import { useTheme } from '../../context/ThemeContext';
-
-// const SettingScreen = ({ navigation }) => {
-//   const { isDark, toggleTheme, theme } = useTheme();
-
-//   const [notify, setNotify] = useState(true);
-//   const [showDropdown, setShowDropdown] = useState(false);
-//   const [snooze, setSnooze] = useState('5 min');
-
-//   // LOGOUT
-//   const handleLogout = async () => {
-//     try {
-//       await AsyncStorage.multiRemove([
-//         'token',
-//         'userId',
-//         'userName',
-//       ]);
-
-//       navigation.reset({
-//         index: 0,
-//         routes: [{ name: 'AuthStack' }],
-//       });
-//     } catch (error) {
-//       console.log('Logout error:', error);
-//     }
-//   };
-
-//   return (
-//     <SafeAreaView
-//       style={[
-//         styles.container,
-//         {
-//           backgroundColor: theme.bg,
-//         },
-//       ]}
-//     >
-//       {/* ================= HEADER ================= */}
-//       <View style={styles.header}>
-//         <TouchableOpacity
-//           onPress={() => navigation.goBack()}
-//           style={styles.backButton}
-//         >
-//           <Ionicons
-//             name="arrow-back"
-//             size={22}
-//             color={theme.text}
-//           />
-//         </TouchableOpacity>
-
-//         <View
-//           style={[
-//             styles.headerBox,
-//             {
-//               backgroundColor: theme.headerBox,
-//             },
-//           ]}
-//         >
-//           <Ionicons
-//             name="settings-outline"
-//             size={16}
-//             color={theme.text}
-//           />
-
-//           <Text
-//             style={[
-//               styles.headerText,
-//               {
-//                 color: theme.text,
-//               },
-//             ]}
-//           >
-//             SETTINGS
-//           </Text>
-//         </View>
-
-//         {/* Keeps header centered */}
-//         <View style={styles.headerRightSpace} />
-//       </View>
-
-//       {/* ================= PERSONAL INFO ================= */}
-//       <Text
-//         style={[
-//           styles.sectionTitle,
-//           {
-//             color: theme.text,
-//           },
-//         ]}
-//       >
-//         Personal Info
-//       </Text>
-
-//       {/* ================= HISTORY ================= */}
-//       <TouchableOpacity
-//         style={styles.row}
-//         onPress={() =>
-//           navigation.navigate('TimeBasedHistoryScreen')
-//         }
-//       >
-//         <View style={styles.left}>
-//           <Ionicons
-//             name="swap-horizontal-outline"
-//             size={20}
-//             color={theme.text}
-//           />
-
-//           <Text
-//             style={[
-//               styles.text,
-//               {
-//                 color: theme.text,
-//               },
-//             ]}
-//           >
-//             HISTORY
-//           </Text>
-//         </View>
-//       </TouchableOpacity>
-
-//       {/* ================= SNOOZE TIME ================= */}
-//       <TouchableOpacity
-//         style={styles.row}
-//         onPress={() =>
-//           setShowDropdown(!showDropdown)
-//         }
-//       >
-//         <View style={styles.left}>
-//           <Ionicons
-//             name="time-outline"
-//             size={20}
-//             color={theme.text}
-//           />
-
-//           <Text
-//             style={[
-//               styles.text,
-//               {
-//                 color: theme.text,
-//               },
-//             ]}
-//           >
-//             Snooze Time : {snooze}
-//           </Text>
-//         </View>
-
-//         <Ionicons
-//           name={
-//             showDropdown
-//               ? 'chevron-up-outline'
-//               : 'chevron-down-outline'
-//           }
-//           size={18}
-//           color={theme.text}
-//         />
-//       </TouchableOpacity>
-
-//       {/* ================= SNOOZE OPTIONS ================= */}
-//       {showDropdown && (
-//         <View
-//           style={[
-//             styles.dropdown,
-//             {
-//               backgroundColor: theme.card,
-//             },
-//           ]}
-//         >
-//           {['5 min', '10 min', '15 min'].map(item => (
-//             <TouchableOpacity
-//               key={item}
-//               style={styles.dropItem}
-//               onPress={() => {
-//                 setSnooze(item);
-//                 setShowDropdown(false);
-//               }}
-//             >
-//               <Text
-//                 style={[
-//                   styles.dropText,
-//                   {
-//                     color: theme.text,
-//                   },
-//                 ]}
-//               >
-//                 {item}
-//               </Text>
-//             </TouchableOpacity>
-//           ))}
-//         </View>
-//       )}
-
-//       {/* ================= NOTIFICATION ================= */}
-//       <View style={styles.row}>
-//         <View style={styles.left}>
-//           <Ionicons
-//             name="notifications-outline"
-//             size={20}
-//             color={theme.text}
-//           />
-
-//           <Text
-//             style={[
-//               styles.text,
-//               {
-//                 color: theme.text,
-//               },
-//             ]}
-//           >
-//             Notification
-//           </Text>
-//         </View>
-
-//         <Switch
-//           value={notify}
-//           onValueChange={setNotify}
-//           trackColor={{
-//             false: '#ccc',
-//             true: '#3AC35C',
-//           }}
-//           thumbColor="#fff"
-//         />
-//       </View>
-
-//       {/* ================= DARK MODE ================= */}
-//       <View style={styles.row}>
-//         <View style={styles.left}>
-//           <Ionicons
-//             name="moon-outline"
-//             size={20}
-//             color={theme.text}
-//           />
-
-//           <Text
-//             style={[
-//               styles.text,
-//               {
-//                 color: theme.text,
-//               },
-//             ]}
-//           >
-//             Dark Mode
-//           </Text>
-//         </View>
-
-//         <Switch
-//           value={isDark}
-//           onValueChange={toggleTheme}
-//           trackColor={{
-//             false: '#ccc',
-//             true: '#3AC35C',
-//           }}
-//           thumbColor="#fff"
-//         />
-//       </View>
-
-//       {/* ================= DIVIDER ================= */}
-//       <View
-//         style={[
-//           styles.divider,
-//           {
-//             backgroundColor: `${theme.text}30`,
-//           },
-//         ]}
-//       />
-
-//       {/* ================= LOGOUT ================= */}
-//       <View style={styles.logoutRow}>
-//         <Ionicons
-//           name="log-out-outline"
-//           size={22}
-//           color={theme.text}
-//         />
-
-//         <TouchableOpacity
-//           style={styles.logoutBtn}
-//           onPress={handleLogout}
-//         >
-//           <Text style={styles.logoutText}>
-//             LOGOUT
-//           </Text>
-//         </TouchableOpacity>
-//       </View>
-
-//       {/* ================= BOTTOM NAVIGATION ================= */}
-//       <View
-//         style={[
-//           styles.bottom,
-//           {
-//             backgroundColor: theme.bottomNav,
-//           },
-//         ]}
-//       >
-//         {/* HOME */}
-//         <TouchableOpacity
-//           style={styles.iconBtn}
-//           onPress={() =>
-//             navigation.navigate('HomeDashboard')
-//           }
-//         >
-//           <Ionicons
-//             name="home"
-//             size={24}
-//             color="#fff"
-//           />
-//         </TouchableOpacity>
-
-//         {/* CONTACTS */}
-//         <TouchableOpacity
-//           style={styles.iconBtn}
-//           onPress={() =>
-//             navigation.navigate('ContactScreen')
-//           }
-//         >
-//           <Ionicons
-//             name="people"
-//             size={24}
-//             color="#fff"
-//           />
-//         </TouchableOpacity>
-
-//         {/* HISTORY */}
-//         <TouchableOpacity
-//           style={styles.iconBtn}
-//           onPress={() =>
-//             navigation.navigate(
-//               'TimeBasedHistoryScreen'
-//             )
-//           }
-//         >
-//           <Ionicons
-//             name="time"
-//             size={24}
-//             color="#fff"
-//           />
-//         </TouchableOpacity>
-
-//         {/* SETTINGS */}
-//         <TouchableOpacity
-//           style={styles.iconBtn}
-//           onPress={() =>
-//             navigation.navigate('SettingScreen')
-//           }
-//         >
-//           <Ionicons
-//             name="settings"
-//             size={24}
-//             color="#fff"
-//           />
-//         </TouchableOpacity>
-//       </View>
-//     </SafeAreaView>
-//   );
-// };
-
-// export default SettingScreen;
-
-// /* =====================================================
-//    STYLES
-// ===================================================== */
-
-// const styles = StyleSheet.create({
-//   container: {
-//     flex: 1,
-//     paddingHorizontal: 16,
-//   },
-
-//   /* ================= HEADER ================= */
-
-//   header: {
-//     flexDirection: 'row',
-//     justifyContent: 'space-between',
-//     alignItems: 'center',
-//     marginTop: 10,
-//     marginBottom: 20,
-//   },
-
-//   backButton: {
-//     width: 30,
-//     alignItems: 'flex-start',
-//     justifyContent: 'center',
-//   },
-
-//   headerRightSpace: {
-//     width: 30,
-//   },
-
-//   headerBox: {
-//     flexDirection: 'row',
-//     alignItems: 'center',
-//     paddingHorizontal: 18,
-//     paddingVertical: 6,
-//     borderRadius: 10,
-//     elevation: 3,
-//   },
-
-//   headerText: {
-//     fontWeight: '800',
-//     marginLeft: 6,
-//   },
-
-//   /* ================= SECTION ================= */
-
-//   sectionTitle: {
-//     fontSize: 20,
-//     fontWeight: '700',
-//     marginBottom: 14,
-//   },
-
-//   /* ================= ROW ================= */
-
-//   row: {
-//     flexDirection: 'row',
-//     justifyContent: 'space-between',
-//     alignItems: 'center',
-//     marginBottom: 14,
-//     minHeight: 40,
-//   },
-
-//   left: {
-//     flexDirection: 'row',
-//     alignItems: 'center',
-//   },
-
-//   text: {
-//     marginLeft: 12,
-//     fontSize: 15,
-//   },
-
-//   /* ================= DROPDOWN ================= */
-
-//   dropdown: {
-//     borderRadius: 10,
-//     marginBottom: 14,
-//     marginTop: -5,
-//     elevation: 4,
-//     overflow: 'hidden',
-//   },
-
-//   dropItem: {
-//     paddingVertical: 12,
-//     paddingHorizontal: 20,
-//     borderBottomWidth: 1,
-//     borderBottomColor: '#00000015',
-//   },
-
-//   dropText: {
-//     fontSize: 14,
-//   },
-
-//   /* ================= DIVIDER ================= */
-
-//   divider: {
-//     height: 1,
-//     marginVertical: 18,
-//   },
-
-//   /* ================= LOGOUT ================= */
-
-//   logoutRow: {
-//     flexDirection: 'row',
-//     alignItems: 'center',
-//     marginTop: 20,
-//   },
-
-//   logoutBtn: {
-//     marginLeft: 14,
-//     backgroundColor: '#000',
-//     paddingVertical: 12,
-//     paddingHorizontal: 30,
-//     borderRadius: 25,
-//     elevation: 4,
-//   },
-
-//   logoutText: {
-//     color: '#fff',
-//     fontWeight: '800',
-//     letterSpacing: 1,
-//   },
-
-//   /* ================= BOTTOM NAV ================= */
-
-//   bottom: {
-//     position: 'absolute',
-//     bottom: 0,
-//     left: 0,
-//     right: 0,
-//     height: 65,
-//     flexDirection: 'row',
-//     justifyContent: 'space-around',
-//     alignItems: 'center',
-//     paddingHorizontal: 10,
-//     elevation: 10,
-//   },
-
-//   iconBtn: {
-//     flex: 1,
-//     alignItems: 'center',
-//     justifyContent: 'center',
-//     height: '100%',
-//   },
-// });

@@ -229,7 +229,7 @@ const SignUpScreen = ({ navigation }) => {
                       style={styles.inputIcon}
                     />
                     <TextInput
-                      placeholder="John"
+                      placeholder="MANNAN"
                       placeholderTextColor={subTextColor}
                       style={[styles.input, { color: textColor }]}
                       value={firstName}
@@ -256,7 +256,7 @@ const SignUpScreen = ({ navigation }) => {
                       style={styles.inputIcon}
                     />
                     <TextInput
-                      placeholder="Doe"
+                      placeholder="RANA"
                       placeholderTextColor={subTextColor}
                       style={[styles.input, { color: textColor }]}
                       value={lastName}
@@ -315,7 +315,7 @@ const SignUpScreen = ({ navigation }) => {
                     style={styles.inputIcon}
                   />
                   <TextInput
-                    placeholder="+1 234 567 8900"
+                    placeholder="+92 333 5678421"
                     placeholderTextColor={subTextColor}
                     style={[styles.input, { color: textColor }]}
                     value={phoneNumber}
